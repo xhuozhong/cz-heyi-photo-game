@@ -37,7 +37,7 @@ SelfieSegmenter 面向近距离、主体清晰的人像；多个人、远景、�
 - **此锁定 square 模型返回 1 张 confidenceMasks，`getLabels()` 为 `["selfie"]`。前景取 `confidenceMasks[0].getAsFloat32Array()`，值 0～1，1 为人物。** 实测脸部中心=1，左上背景约 0。不要误取不存在的第 2 张 mask。
 - mask 的 `width` / `height` 等于输入图像宽高（1448×1086 / 509×506），不是内部模型 256×256。取数组后及时拷贝所需像素，再 `result.close()`；结束时关闭 detector / segmenter。
 - `FaceDetector.detect(image).detections` 为数组；`boundingBox.originX/originY/width/height` 是输入图像中的像素。`keypoints[0]` / `[1]` 是画面左眼 / 右眼，`[2]` 鼻、`[3]` 嘴、`[4]` / `[5]` 耳；x、y 是归一化坐标，分别乘输入宽、高。
-- 初始化使用 `FilesetResolver.forVisionTasks("/vendor/mediapipe/wasm")`；两个任务使用 `runningMode: "IMAGE"`，分割配置 `outputConfidenceMasks:true, outputCategoryMask:false`。
+- 初始化使用 `FilesetResolver.forVisionTasks("./vendor/mediapipe/wasm")`；两个任务使用 `runningMode: "IMAGE"`，分割配置 `outputConfidenceMasks:true, outputCategoryMask:false`。
 - 无未捕获页面异常。测试日志的 404 是未设置 favicon；两条 TensorFlow Lite XNNPACK INFO 被 WASM 打到 error console，属于初始化日志。正式游戏应提供 favicon，并区分 INFO 与实际异常。
 
 静态服务器必须将 `.mjs` / `.js` 以 JavaScript MIME 返回，`.wasm` 以 `application/wasm` 返回。页面可使用相对模型路径，访问域名/子路径部署时随站点调整。模型和运行资产全部保存于项目内，玩家无需使用第三方会员或付费生图服务。

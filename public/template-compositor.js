@@ -149,6 +149,7 @@ export async function createComposition(avatar, options, status = () => {}) {
   const data = await manifest(), bodyData = data.bodies[options.gender], characterData = data.characters[options.character];
   const [body, partner, scene, skinMask] = await Promise.all([loadImage(bodyData.srcByOutfit?.[options.outfit] || bodyData.src), loadImage(characterData.src), loadImage(`assets/scenes/${options.scene}.jpg`), bodyData.skinMask ? loadImage(bodyData.skinMask) : null]);
   const stage = canvas(1024, 768), base = canvas(1024, 768), ctx = base.getContext('2d');
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
   ctx.save(); ctx.filter = 'blur(1.5px)'; cover(ctx, scene, 1024, 768); ctx.restore();
   const shade = ctx.createLinearGradient(0, 0, 0, 768); shade.addColorStop(0, '#161c1717'); shade.addColorStop(1, '#161c1738'); ctx.fillStyle = shade; ctx.fillRect(0, 0, 1024, 768);
   const partnerFace = characterData.face, face = bodyData.face;
@@ -160,7 +161,7 @@ export async function createComposition(avatar, options, status = () => {}) {
   drawBody(ctx, bodyTone, t, face, widthFactor);
   const defaultAdjustments = { scale: 1, x: 0, y: 0, lighting: -2 };
   const render = (adjustments = defaultAdjustments) => {
-    const out = stage.getContext('2d'); out.clearRect(0, 0, 1024, 768); out.drawImage(base, 0, 0);
+    const out = stage.getContext('2d'); out.imageSmoothingEnabled = true; out.imageSmoothingQuality = 'high'; out.clearRect(0, 0, 1024, 768); out.drawImage(base, 0, 0);
     const head = tone(avatar.head, options.scene, adjustments.lighting);
     drawHead(out, { ...avatar, head }, face, t, adjustments);
     const vignette = out.createRadialGradient(510, 350, 180, 510, 350, 660); vignette.addColorStop(0, '#17211600'); vignette.addColorStop(1, '#17211628'); out.fillStyle = vignette; out.fillRect(0, 0, 1024, 768);
