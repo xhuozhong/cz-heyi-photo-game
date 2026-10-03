@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "canvas": {
+    "width": 384,
+    "height": 1152
+  },
+  "coordinateSpace": "pixels",
+  "characters": {
+    "cz": {
+      "src": "assets/templates/cz.png",
+      "face": {
+        "x": 135,
+        "y": 72,
+        "width": 123,
+        "height": 134
+      },
+      "fullHead": {
+        "x": 123,
+        "y": 44,
+        "width": 156,
+        "height": 180
+      },
+      "neck": {
+        "x": 196,
+        "y": 243
+      },
+      "width": 384,
+      "height": 1152
+    },
+    "heyi": {
+      "src": "assets/templates/heyi.png",
+      "face": {
+        "x": 131,
+        "y": 42,
+        "width": 120,
+        "height": 144
+      },
+      "fullHead": {
+        "x": 65,
+        "y": 8,
+        "width": 260,
+        "height": 329
+      },
+      "neck": {
+        "x": 202,
+        "y": 225
+      },
+      "width": 384,
+      "height": 1152
+    }
+  },
+  "bodies": {
+    "male": {
+      "src": "assets/templates/male-body.png",
+      "clothingMask": "assets/templates/male-clothing-mask.png",
+      "skinMask": "assets/templates/male-skin-mask.png",
+      "srcByOutfit": {
+        "black": "assets/templates/male-body-black.png",
+        "cream": "assets/templates/male-body-cream.png",
+        "red": "assets/templates/male-body-red.png"
+      },
+      "face": {
+        "x": 135,
+        "y": 72,
+        "width": 123,
+        "height": 134
+      },
+      "fullHead": {
+        "x": 123,
+        "y": 44,
+        "width": 156,
+        "height": 180
+      },
+      "headErase": {
+        "x": 130,
+        "y": 51,
+        "width": 131,
+        "height": 159
+      },
+      "headEraseMask": "assets/templates/male-head-erase-mask.png",
+      "neck": {
+        "x": 196,
+        "y": 243
+      },
+      "neckSkinRGB": [
+        194,
+        153,
+        131
+      ],
+      "width": 384,
+      "height": 1152,
+      "headCutY": 205,
+      "torso": {
+        "top": 205,
+        "bottom": 613
+      },
+      "sourceCrop": {
+        "left": 28,
+        "top": 110,
+        "width": 310,
+        "height": 900
+      }
+    },
+    "female": {
+      "src": "assets/templates/female-body.png",
+      "clothingMask": "assets/templates/female-clothing-mask.png",
+      "skinMask": "assets/templates/female-skin-mask.png",
+      "srcByOutfit": {
+        "black": "assets/templates/female-body-black.png",
+        "cream": "assets/templates/female-body-cream.png",
+        "red": "assets/templates/female-body-red.png"
+      },
+      "face": {
+        "x": 131,
+        "y": 42,
+        "width": 120,
+        "height": 144
+      },
+      "fullHead": {
+        "x": 65,
+        "y": 8,
+        "width": 260,
+        "height": 329
+      },
+      "headErase": {
+        "x": 87,
+        "y": 13,
+        "width": 185,
+        "height": 325
+      },
+      "headEraseMask": "assets/templates/female-head-erase-mask.png",
+      "neck": {
+        "x": 202,
+        "y": 225
+      },
+      "neckSkinRGB": [
+        212,
+        173,
+        142
+      ],
+      "width": 384,
+      "height": 1152,
+      "headCutY": 192,
+      "torso": {
+        "top": 201,
+        "bottom": 780
+      },
+      "sourceCrop": {
+        "left": 44,
+        "top": 6,
+        "width": 256,
+        "height": 815
+      }
+    }
+  }
+}
