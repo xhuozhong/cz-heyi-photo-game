@@ -1,52 +1,54 @@
 {
-  "version": 1,
+  "version": 2,
   "canvas": {
     "width": 384,
     "height": 1152
   },
-  "coordinateSpace": "pixels",
+  "coordinateSpace": "per-asset pixels",
   "characters": {
     "cz": {
       "src": "assets/templates/cz.png",
       "face": {
-        "x": 135,
-        "y": 72,
-        "width": 123,
-        "height": 134
+        "x": 270,
+        "y": 144,
+        "width": 246,
+        "height": 268
       },
       "fullHead": {
-        "x": 123,
-        "y": 44,
-        "width": 156,
-        "height": 180
+        "x": 234,
+        "y": 102,
+        "width": 321,
+        "height": 380
       },
       "neck": {
-        "x": 196,
-        "y": 243
+        "x": 392,
+        "y": 486
       },
-      "width": 384,
-      "height": 1152
+      "width": 768,
+      "height": 2304,
+      "sourceDetail": "Same supplied reference sheet: close-up head + original front-view body"
     },
     "heyi": {
       "src": "assets/templates/heyi.png",
       "face": {
-        "x": 131,
-        "y": 42,
-        "width": 120,
-        "height": 144
+        "x": 262,
+        "y": 84,
+        "width": 240,
+        "height": 288
       },
       "fullHead": {
-        "x": 65,
-        "y": 8,
-        "width": 260,
-        "height": 329
+        "x": 145,
+        "y": 0,
+        "width": 450,
+        "height": 658
       },
       "neck": {
-        "x": 202,
-        "y": 225
+        "x": 404,
+        "y": 450
       },
-      "width": 384,
-      "height": 1152
+      "width": 768,
+      "height": 2304,
+      "sourceDetail": "Same supplied reference sheet: close-up head + original front-view body"
     }
   },
   "bodies": {
@@ -152,5 +154,9 @@
         "height": 815
       }
     }
+  },
+  "characterCanvas": {
+    "width": 768,
+    "height": 2304
   }
 }
