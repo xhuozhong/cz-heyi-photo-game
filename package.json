@@ -1,0 +1,12 @@
+{
+  "name": "cz-heyi-photo-game",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node static-server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
