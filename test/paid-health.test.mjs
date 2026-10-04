@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { protectionConfig, fakeTurnstileFetch, createWithProof, authorizeWithProof, trialWithProof, proofBody, challengeToken, deviceFor } from './helpers/paid-protection-fixture.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { setImmediate as tick } from 'node:timers/promises';
@@ -22,7 +23,7 @@ function standalone(provider, network = chain(), config = {}) {
 }
 async function fixture(t, provider) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'photo-health-test-'));
-  const app = await createPaidServer({ config: { rootDir, dataDir, enabled: true, firstFree: true, allowedOrigins: ['http://127.0.0.1:48123'] }, chain: chain(), provider, autoProcess: false });
+  const app = await createPaidServer({ config: { ...protectionConfig, rootDir, dataDir, enabled: true, firstFree: true, allowedOrigins: ['http://127.0.0.1:48123'] }, chain: chain(), provider, autoProcess: false, turnstileFetch: fakeTurnstileFetch });
   t.after(async () => { await app.close(); await rm(dataDir, { recursive: true, force: true }); });
   return app;
 }
@@ -30,8 +31,8 @@ async function fixture(t, provider) {
 test('HTTP health remains immediate and fail-closed while startup preflight is blocked; concurrent reads share one check', async t => {
   const gate = deferred(); let checks = 0;
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'photo-health-http-'));
-  const app = await createPaidServer({ config: { rootDir, dataDir, enabled: true, firstFree: true, allowedOrigins: ['http://localhost'] },
-    chain: chain(), provider: { preflight: async () => { checks++; return gate.promise; } }, autoProcess: false });
+  const app = await createPaidServer({ config: { ...protectionConfig, rootDir, dataDir, enabled: true, firstFree: true, allowedOrigins: ['http://localhost'] },
+    chain: chain(), provider: { preflight: async () => { checks++; return gate.promise; } }, autoProcess: false, turnstileFetch: fakeTurnstileFetch });
   t.after(async () => { gate.resolve({ ready: true }); await app.close(); await rm(dataDir, { recursive: true, force: true }); });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${app.server.address().port}`;
@@ -114,12 +115,12 @@ test('new order and signed free authorization fail fresh without using an old su
   const photoDataUrl = `data:image/jpeg;base64,${(await sharp({ create: { width: 128, height: 128, channels: 3, background: '#caa' } }).jpeg().toBuffer()).toString('base64')}`;
   const body = { payerAddress: wallet.address, photoDataUrl, character: 'cz', scene: 'cafe', expectedBillingMode: 'free_trial' };
   available = false;
-  await assert.rejects(app.service.create(body), { code: 'SERVICE_UNAVAILABLE' });
+  await assert.rejects(createWithProof(app.service, body), { code: 'SERVICE_UNAVAILABLE' });
   assert.equal(Object.keys(app.service.store.state.orders).length, 0); assert.equal(app.service.ready().ready, false);
   available = true;
-  const order = await app.service.create(body); assert.equal(app.service.ready().ready, true);
+  const order = await createWithProof(app.service, body); assert.equal(app.service.ready().ready, true);
   available = false;
-  await assert.rejects(app.service.authorize(order.id, order.token, await wallet.signMessage(order.signatureMessage)), { code: 'SERVICE_UNAVAILABLE' });
+  await assert.rejects(authorizeWithProof(app.service, order.id, order.token, await wallet.signMessage(order.signatureMessage)), { code: 'SERVICE_UNAVAILABLE' });
   const stored = app.service.store.state.orders[order.id];
   assert.equal(stored.status, 'awaiting_authorization'); assert.equal(stored.authorizedAt, undefined); assert.equal(stored.payment, undefined);
   assert.deepEqual(app.service.store.state.consumedTrials, {}); assert.equal(app.service.ready().ready, false);
@@ -148,8 +149,8 @@ test('the final generation invalidates health throughout submission and leaves i
   const app = await fixture(t, provider);
   const wallet = Wallet.createRandom();
   const photoDataUrl = `data:image/jpeg;base64,${(await sharp({ create: { width: 128, height: 128, channels: 3, background: '#aac' } }).jpeg().toBuffer()).toString('base64')}`;
-  const order = await app.service.create({ payerAddress: wallet.address, photoDataUrl, character: 'heyi', scene: 'cafe', expectedBillingMode: 'free_trial' });
-  await app.service.authorize(order.id, order.token, await wallet.signMessage(order.signatureMessage));
+  const order = await createWithProof(app.service, { payerAddress: wallet.address, photoDataUrl, character: 'heyi', scene: 'cafe', expectedBillingMode: 'free_trial' });
+  await authorizeWithProof(app.service, order.id, order.token, await wallet.signMessage(order.signatureMessage));
   const processing = app.service.processQueue(); await entered.promise;
   assert.equal(app.service.ready().ready, false); assert.equal(app.service.ready().checking, true);
   await assert.rejects(app.service.requireReady(), { code: 'SERVICE_UNAVAILABLE' });

@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { getAddress, verifyMessage, hexlify, toUtf8Bytes, formatEther } from 'ethers';
@@ -13,10 +14,13 @@ const IN_PROGRESS = ['queued', 'submitting', 'generating'];
 const HEALTH_TTL_MS = 20_000;
 const HEALTH_MAX_STALE_MS = 60_000;
 const HEALTH_CHECKING_REASON = '正在核验 AI 服务，请稍后重试';
+const DEVICE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const trialDay = value => new Date(value + 8 * 60 * 60_000).toISOString().slice(0, 10); // Asia/Shanghai
 
 export class PaidService {
-  constructor(config, chain, provider) {
-    this.config = { enabled: false, firstFree: true, orderTtlMs: 30 * 60_000, maxOpenOrders: 32, maxOrders: 10000, maxStoredPhotoBytes: 256 * 1024 * 1024, maxInProgress: 1, ...config };
+  constructor(config, chain, provider, verifyChallenge) {
+    this.config = { enabled: false, firstFree: true, orderTtlMs: 30 * 60_000, paidOrderTtlMs: 5 * 60_000, trialTotalLimit: 20, trialDailyLimit: 5, trialIpDailyLimit: 2, maxOpenOrders: 32, maxOrders: 10000, maxStoredPhotoBytes: 256 * 1024 * 1024, maxInProgress: 1, ...config };
+    this.verifyChallenge = verifyChallenge;
     this.chain = chain;
     this.provider = provider;
     this.store = new OrderStore(this.config.dataDir);
@@ -34,7 +38,7 @@ export class PaidService {
     await this.store.close();
   }
   healthValue(value) {
-    return { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: PRICE_BNB, priceWei: PRICE_WEI, firstFree: this.config.firstFree, trialPolicy: 'once_per_wallet', provider: 'libtv' };
+    return { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: PRICE_BNB, priceWei: PRICE_WEI, firstFree: this.config.firstFree, trialPolicy: 'wallet_device_ip_limits', provider: 'libtv', turnstile: { required: true, siteKey: this.config.turnstileSiteKey || '', orderAction: 'photo_order', trialAction: 'photo_trial', checkAction: 'photo_check' }, trialLimits: { total: this.config.trialTotalLimit, daily: this.config.trialDailyLimit, ipDaily: this.config.trialIpDailyLimit, deviceLifetime: 1, dayTimezone: 'Asia/Shanghai' } };
   }
   // Health is a fast read-only snapshot. It never waits for the CLI/RPC check.
   // Successful snapshots can survive one refresh, but never beyond 60 seconds.
@@ -101,10 +105,33 @@ export class PaidService {
   wallet(address) {
     try { return getAddress(address); } catch { throw new ApiError(400, 'INVALID_WALLET', '钱包地址格式不正确'); }
   }
-  async trial(address) {
+  trialIdentity(deviceId, ip) {
+    requireValue(DEVICE_PATTERN.test(deviceId || ''), 400, 'DEVICE_REQUIRED', '请允许浏览器保存体验标识后重试');
+    requireValue(isIP(ip || '') > 0, 403, 'VISITOR_IP_REQUIRED', '请求来源无法验证');
+    requireValue(typeof this.config.trialHmacSecret === 'string' && this.config.trialHmacSecret.length >= 32, 503, 'TRIAL_CONFIG', '首次免费体验暂不可用');
+    for (const key of ['trialTotalLimit', 'trialDailyLimit', 'trialIpDailyLimit']) requireValue(Number.isSafeInteger(this.config[key]) && this.config[key] > 0, 503, 'TRIAL_CONFIG', '首次免费体验暂不可用');
+    requireValue(!this.config.generationBudget || this.config.trialTotalLimit < this.config.generationBudget, 503, 'TRIAL_CONFIG', '首次免费体验暂不可用');
+    const canonicalIp = isIP(ip) === 6 ? new URL(`http://[${ip}]/`).hostname : ip;
+    const hash = (kind, value) => createHmac('sha256', this.config.trialHmacSecret).update(`${kind}:${value}`).digest('hex');
+    return { deviceHash: hash('device', deviceId), ipHash: hash('ip', canonicalIp) };
+  }
+  trialStatus(wallet, identity, now = Date.now()) {
+    const claims = Object.values(this.store.state.trialClaims);
+    const today = trialDay(now);
+    const poolReason = !this.config.firstFree ? 'disabled' : claims.length >= this.config.trialTotalLimit ? 'total_limit' : claims.filter(claim => claim.day === today).length >= this.config.trialDailyLimit ? 'daily_limit' : '';
+    const blockReason = this.store.state.consumedTrials[wallet.toLowerCase()] ? 'wallet_used' : poolReason || (claims.some(claim => claim.deviceHash === identity.deviceHash) ? 'device_used' : claims.filter(claim => claim.ipHash === identity.ipHash && claim.day === today).length >= this.config.trialIpDailyLimit ? 'ip_daily_limit' : '');
+    return { eligible: !blockReason, available: !poolReason, blockReason: blockReason || null, policy: 'wallet_device_ip_limits' };
+  }
+  async trial(address, context = {}) {
     const wallet = this.wallet(address);
     await this.requireReady();
-    return this.store.exclusive(() => ({ eligible: !!this.config.firstFree && !this.store.state.consumedTrials[wallet.toLowerCase()], policy: 'once_per_wallet' }));
+    const identity = this.trialIdentity(context.deviceId, context.ip);
+    return this.store.exclusive(() => this.trialStatus(wallet, identity));
+  }
+  async humanCheck(body, context = {}) {
+    this.trialIdentity(body.trialDeviceId, context.ip);
+    await this.verifyChallenge(body.turnstileToken, { ...context, action: 'photo_check', deviceId: body.trialDeviceId });
+    return { verified: true };
   }
   authenticate(id, token) {
     const order = this.store.state.orders[id];
@@ -116,6 +143,7 @@ export class PaidService {
   view(order) {
     return {
       id: order.id, status: order.status, character: order.character, scene: order.scene, options: order.options,
+      protectionVersion: order.protectionVersion || 0, trialChallengeRequired: order.billingMode === 'free_trial' && !order.authorizedAt,
       billingMode: order.billingMode || 'paid', priceWei: order.priceWei || order.payment.valueWei,
       priceBnb: order.priceBnb || formatEther(order.payment.valueWei),
       createdAt: order.createdAt, expiresAt: order.expiresAt, payerAddress: order.payerAddress,
@@ -141,8 +169,10 @@ export class PaidService {
     }
     if (changed) await this.store.save();
   }
-  async create(body) {
+  async create(body, context = {}) {
     await this.requireReady();
+    const identity = this.trialIdentity(body.trialDeviceId, context.ip);
+    await this.verifyChallenge(body.turnstileToken, { ...context, action: 'photo_order', deviceId: body.trialDeviceId });
     return this.store.exclusive(async () => {
       await this.cleanExpired();
       const all = Object.values(this.store.state.orders);
@@ -153,7 +183,9 @@ export class PaidService {
       requireValue(['cz', 'heyi'].includes(body.character) && ['terrace', 'cafe', 'street'].includes(body.scene), 400, 'INVALID_SELECTION', '请选择有效的伙伴与场景');
       const options = { gender: body.options?.gender || 'male', body: body.options?.body || 'standard', outfit: body.options?.outfit || 'black' };
       requireValue(['male', 'female'].includes(options.gender) && ['slim', 'standard', 'full'].includes(options.body) && ['black', 'cream', 'red'].includes(options.outfit), 400, 'INVALID_OPTIONS', '服装或身材选项不正确');
-      const billingMode = this.config.firstFree && !this.store.state.consumedTrials[payerAddress.toLowerCase()] ? 'free_trial' : 'paid';
+      const trial = this.trialStatus(payerAddress, identity);
+      requireValue(trial.eligible || trial.blockReason === 'wallet_used' || trial.blockReason === 'disabled' || body.expectedBillingMode === 'paid', 409, 'TRIAL_LIMIT_REACHED', '首次免费体验受名额限制已暂停；付费体验需您重新确认');
+      const billingMode = trial.eligible ? 'free_trial' : 'paid';
       requireValue(body.expectedBillingMode === undefined || ['free_trial', 'paid'].includes(body.expectedBillingMode), 400, 'INVALID_BILLING_MODE', '请选择有效的计费方式');
       requireValue(body.expectedBillingMode === undefined || body.expectedBillingMode === billingMode, 409, 'TRIAL_CHANGED', '首次免费资格已变化，请重新确认本次费用');
       const normalized = await normalizePhoto(body.photoDataUrl);
@@ -165,7 +197,8 @@ export class PaidService {
       const priceWei = billingMode === 'free_trial' ? '0' : PRICE_WEI;
       const priceBnb = billingMode === 'free_trial' ? '0' : PRICE_BNB;
       const order = {
-        id, tokenHash: digest(token), payerAddress, createdAt, expiresAt: createdAt + this.config.orderTtlMs,
+        id, tokenHash: digest(token), payerAddress, createdAt, expiresAt: createdAt + (billingMode === 'paid' ? this.config.paidOrderTtlMs : this.config.orderTtlMs),
+        protectionVersion: 1, trialIdentity: identity,
         status: 'awaiting_authorization', paymentStatus: billingMode === 'free_trial' ? 'not_required' : 'unpaid', billingMode, priceBnb, priceWei, character: body.character, scene: body.scene, options,
         photoHash: digest(normalized), photoBytes: normalized.length, nonce: randomBytes(24).toString('hex'), startBlock: latest.number,
         payment: billingMode === 'paid' ? { chainId: CHAIN_ID, to: RECIPIENT, valueWei: priceWei, valueHex: `0x${BigInt(priceWei).toString(16)}`, data: hexlify(toUtf8Bytes(`cz-heyi-photo:${id}`)) } : undefined,
@@ -188,7 +221,7 @@ export class PaidService {
       return { ...this.view(order), token };
     });
   }
-  async authorize(id, token, signature) {
+  async authorize(id, token, signature, context = {}) {
     const response = await this.store.exclusive(async () => {
       const order = this.authenticate(id, token);
       if (!unpaid(order)) return this.view(order);
@@ -203,9 +236,16 @@ export class PaidService {
           const wallet = order.payerAddress.toLowerCase();
           requireValue(this.config.firstFree, 409, 'TRIAL_DISABLED', '首次免费体验暂未开放，请重新创建订单');
           requireValue(!this.store.state.consumedTrials[wallet] || this.store.state.consumedTrials[wallet] === id, 409, 'TRIAL_ALREADY_USED', '此钱包的首次免费体验已用于另一订单，请继续原订单');
+          let identity;
+          identity = this.trialIdentity(context.deviceId, context.ip);
+          requireValue(!order.trialIdentity || identity.deviceHash === order.trialIdentity.deviceHash, 403, 'DEVICE_MISMATCH', '请在创建订单的浏览器继续领取');
+          requireValue(this.trialStatus(order.payerAddress, identity).eligible, 409, 'TRIAL_LIMIT_REACHED', '免费体验名额已用完，请重新确认付费订单');
+          await this.verifyChallenge(context.turnstileToken, { ...context, action: 'photo_trial', deviceId: context.deviceId });
           // Reserve the normalized wallet and its generation together before any provider call.
           this.store.state.consumedTrials[wallet] = id;
           order.authorizedAt = Date.now(); order.trialReservedAt = order.authorizedAt;
+          this.store.state.trialClaims[id] = { ...identity, day: trialDay(order.authorizedAt), reservedAt: order.authorizedAt, legacy: false };
+          order.trialIdentity = identity;
           order.status = 'queued'; order.paymentStatus = 'not_required'; order.message = '首次免费体验已领取，等待 AI 生成';
         } else {
           const { latest } = await chainPreflight(this.chain);

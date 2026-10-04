@@ -39,15 +39,14 @@ export class OrderStore {
     await this.lock.sync();
     try {
       try { this.state = JSON.parse(await readFile(path.join(this.dataDir, 'orders.json'), 'utf8')); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; this.state = { version: 2, orders: {}, consumedTransactions: {}, consumedTrials: {} }; }
+      catch (error) { if (error.code !== 'ENOENT') throw error; this.state = { version: 3, orders: {}, consumedTransactions: {}, consumedTrials: {}, trialClaims: {} }; }
       const record = value => value && typeof value === 'object' && !Array.isArray(value);
-      if (![1, 2].includes(this.state.version) || !record(this.state.orders) || !record(this.state.consumedTransactions)) throw new Error('Unsupported or damaged order store; refusing to start');
-      const migrating = this.state.version === 1;
-      if (migrating) {
+      if (![1, 2, 3].includes(this.state.version) || !record(this.state.orders) || !record(this.state.consumedTransactions)) throw new Error('Unsupported or damaged order store; refusing to start');
+      const migrating = this.state.version < 3;
+      if (this.state.version === 1) {
         // Existing signed order messages/payment amounts are never rewritten.
         if (this.state.consumedTrials !== undefined && !record(this.state.consumedTrials)) throw new Error('Damaged trial ledger; refusing to start');
         this.state.consumedTrials ??= {};
-        this.state.version = 2;
       }
       if (!record(this.state.consumedTrials)) throw new Error('Damaged trial ledger; refusing to start');
       for (const [wallet, id] of Object.entries(this.state.consumedTrials)) {
@@ -55,6 +54,23 @@ export class OrderStore {
       }
       for (const order of Object.values(this.state.orders)) {
         if (order.billingMode === 'free_trial' && order.authorizedAt && this.state.consumedTrials[order.payerAddress?.toLowerCase()] !== order.id) throw new Error('Free order missing durable trial reservation; refusing to start');
+      }
+      if (migrating) {
+        this.state.trialClaims = {};
+        for (const id of Object.values(this.state.consumedTrials)) {
+          const order = this.state.orders[id];
+          const reservedAt = order?.trialReservedAt || order?.authorizedAt || order?.createdAt || 0;
+          this.state.trialClaims[id] = { legacy: true, reservedAt, day: new Date(reservedAt + 8 * 60 * 60_000).toISOString().slice(0, 10) };
+        }
+        this.state.version = 3;
+      }
+      if (!record(this.state.trialClaims)) throw new Error('Damaged free claim ledger; refusing to start');
+      const claimIds = Object.values(this.state.consumedTrials);
+      if (new Set(claimIds).size !== claimIds.length || Object.keys(this.state.trialClaims).length !== claimIds.length) throw new Error('Free claim ledger does not match wallet ledger; refusing to start');
+      for (const id of claimIds) {
+        const claim = this.state.trialClaims[id];
+        if (!record(claim) || !Number.isSafeInteger(claim.reservedAt) || claim.reservedAt < 0 || !/^\d{4}-\d{2}-\d{2}$/.test(claim.day) || claim.day !== new Date(claim.reservedAt + 8 * 60 * 60_000).toISOString().slice(0, 10)) throw new Error('Damaged free claim ledger; refusing to start');
+        if (claim.legacy !== true && (!/^[a-f0-9]{64}$/.test(claim.deviceHash || '') || !/^[a-f0-9]{64}$/.test(claim.ipHash || ''))) throw new Error('Damaged free claim identity; refusing to start');
       }
       if (migrating) await this.save();
     } catch (error) { await this.close(); throw error; }

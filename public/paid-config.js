@@ -10,5 +10,6 @@ export const paidConfig = Object.freeze({
   priceBnb: '0.001',
   priceWei: '1000000000000000',
   firstFree: true,
-  trialPolicy: 'once_per_wallet',
+  trialPolicy: 'wallet_device_ip_limits',
+  requireHumanCheck: true,
 });

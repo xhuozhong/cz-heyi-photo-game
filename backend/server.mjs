@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { gzip } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import { promisify } from 'node:util';
 import { PaidService } from './service.mjs';
 import { ApiError, requireValue } from './errors.mjs';
@@ -65,6 +67,51 @@ export function loadConfig(env = process.env) {
     allowedOrigins: (env.FRONTEND_ORIGINS || `http://127.0.0.1:${port},http://localhost:${port}`).split(',').map(s => s.trim()).filter(Boolean),
     serviceDomain: env.SERVICE_DOMAIN || 'cz-heyi-photo-game', cliPath: env.LIBTV_CLI, model: env.LIBTV_MODEL,
     generationBudget: Number(env.LIBTV_GENERATION_BUDGET || 0), projectUuid: env.LIBTV_PROJECT_UUID, accountId: env.LIBTV_ACCOUNT_ID,
+    turnstileSecret: env.TURNSTILE_SECRET || '', turnstileSiteKey: env.TURNSTILE_SITEKEY || '',
+    turnstileHostnames: (env.TURNSTILE_HOSTNAMES || '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean),
+    trustCloudflareLoopbackProxy: env.TRUST_CLOUDFLARE_LOOPBACK_PROXY === 'true',
+    trialHmacSecret: env.FREE_TRIAL_HMAC_SECRET || '',
+    trialTotalLimit: Number(env.FREE_TRIAL_TOTAL_LIMIT || 20), trialDailyLimit: Number(env.FREE_TRIAL_DAILY_LIMIT || 5),
+    trialIpDailyLimit: Number(env.FREE_TRIAL_IP_DAILY_LIMIT || 2),
+    paidOrderTtlMs: Number(env.PAID_ORDER_TTL_SECONDS || 300) * 1000,
+  };
+}
+
+const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+export function visitorIp(req, config) {
+  const peer = req.socket.remoteAddress || '';
+  if (!config.trustCloudflareLoopbackProxy) return isIP(peer) ? peer : '';
+  requireValue(loopback(config.host || '127.0.0.1') && loopback(peer), 403, 'UNTRUSTED_PROXY', '请求代理无法验证');
+  const value = req.headers['cf-connecting-ip'];
+  if (!value && req.method === 'GET' && !req.url?.startsWith('/api/trial')) return peer; // read-only local supervisor/receipt checks
+  requireValue(typeof value === 'string' && isIP(value) > 0, 403, 'VISITOR_IP_REQUIRED', '请求来源无法验证');
+  return value;
+}
+
+export function createTurnstileVerifier(config, fetcher = globalThis.fetch) {
+  const used = new Map();
+  return async (token, { action, hostname, ip, deviceId }) => {
+    requireValue(typeof token === 'string' && token.length > 0 && token.length <= 2048, 403, 'CHALLENGE_REQUIRED', '请先完成人机验证');
+    const hosts = config.turnstileHostnames || [];
+    requireValue(typeof config.turnstileSecret === 'string' && config.turnstileSecret.trim().length > 0 && hosts.includes(hostname), 503, 'CHALLENGE_UNAVAILABLE', '人机验证暂不可用，请稍后再试');
+    const now = Date.now();
+    for (const [key, deadline] of used) if (deadline < now) used.delete(key);
+    const key = createHash('sha256').update(token).digest('hex');
+    requireValue(!used.has(key), 403, 'CHALLENGE_REPLAYED', '验证已使用，请重新验证');
+    requireValue(used.size < 20000, 503, 'CHALLENGE_UNAVAILABLE', '人机验证暂不可用，请稍后再试');
+    // Reserve before network I/O: simultaneous requests cannot redeem one token twice.
+    used.set(key, now + 6 * 60_000);
+    let result;
+    try {
+      const response = await fetcher('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        signal: AbortSignal.timeout(10_000),
+        body: new URLSearchParams({ secret: config.turnstileSecret, response: token, ...(ip ? { remoteip: ip } : {}) }),
+      });
+      if (!response.ok) throw new Error('Siteverify unavailable');
+      result = await response.json();
+    } catch { throw new ApiError(403, 'CHALLENGE_FAILED', '验证失败，请重新验证'); }
+    requireValue(result?.success === true && result.action === action && result.hostname === hostname && hosts.includes(result.hostname) && result.cdata === deviceId, 403, 'CHALLENGE_FAILED', '验证失败，请重新验证');
   };
 }
 
@@ -88,7 +135,7 @@ class RateLimiter {
   }
 }
 
-export async function createPaidServer({ config = loadConfig(), chain, provider, autoProcess = true } = {}) {
+export async function createPaidServer({ config = loadConfig(), chain, provider, autoProcess = true, turnstileFetch } = {}) {
   config = { rootDir: ROOT_DIR, allowedOrigins: [], ...config };
   const resolvedPublic = path.resolve(config.rootDir, 'public');
   const resolvedData = path.resolve(config.dataDir);
@@ -96,7 +143,7 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
   requireValue(Array.isArray(config.allowedOrigins) && config.allowedOrigins.length > 0 && config.allowedOrigins.every(origin => { try { const u = new URL(origin); return u.origin === origin && ['http:', 'https:'].includes(u.protocol); } catch { return false; } }), 500, 'ORIGIN_CONFIG', 'Configure explicit FRONTEND_ORIGINS');
   if (!provider) { const { createLibtvProvider } = await import('./libtv-provider.mjs'); provider = createLibtvProvider(config); }
   chain ??= createChainProvider(config.rpcUrl);
-  const service = new PaidService(config, chain, provider);
+  const service = new PaidService(config, chain, provider, createTurnstileVerifier(config, turnstileFetch));
   await service.open();
   // Warm in the background: opening the listener does not wait for serial CLI
   // preflight commands, and the first health snapshot remains fail-closed.
@@ -136,7 +183,7 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
         // Pages uses the configured HTTPS API. A page served by this backend
         // uses its own API, including local development and the backup entry.
         if (content && pathname === '/paid-config.js') content = Buffer.from(content.toString('utf8').replace(/apiBase:\s*'(?:|https:\/\/xhuozhong\.com)'/, "apiBase: '/'"));
-        res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+        res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://challenges.cloudflare.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
         if (cacheable) res.setHeader('Cache-Control', 'public, max-age=3600, no-transform');
         if (compressible) res.setHeader('Vary', 'Accept-Encoding');
         if (compressed) res.setHeader('Content-Encoding', 'gzip');
@@ -156,11 +203,14 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
       }
       requireValue(['GET', 'POST'].includes(req.method), 405, 'METHOD_NOT_ALLOWED', '不支持此请求');
       if (req.method === 'POST') requireValue(origin && config.allowedOrigins.includes(origin), 403, 'ORIGIN_REQUIRED', '请求需要有效来源');
-      const ip = req.socket.remoteAddress || 'unknown'; // Never trust client-controlled X-Forwarded-For.
+      // CF's visitor header is trusted only with explicit local-proxy configuration.
+      const ip = visitorIp(req, config) || 'unknown';
+      const context = { ip, hostname: origin ? new URL(origin).hostname.toLowerCase() : '' };
       limiter.check(`all:${ip}`, 240, 60_000);
       if (req.method === 'GET' && url.pathname === '/api/health') { json(200, service.ready()); return; }
-      if (req.method === 'GET' && url.pathname === '/api/trial') { json(200, await service.trial(url.searchParams.get('address'))); return; }
-      if (req.method === 'POST' && url.pathname === '/api/orders') { limiter.check(`new:${ip}`, 6, 60_000); json(201, await service.create(await readJson(req))); return; }
+      if (req.method === 'GET' && url.pathname === '/api/trial') { json(200, await service.trial(url.searchParams.get('address'), { ...context, deviceId: url.searchParams.get('deviceId') })); return; }
+      if (req.method === 'POST' && url.pathname === '/api/human-check') { limiter.check(`human:${ip}`, 6, 60_000); json(200, await service.humanCheck(await readJson(req), context)); return; }
+      if (req.method === 'POST' && url.pathname === '/api/orders') { limiter.check(`new:${ip}`, 6, 60_000); json(201, await service.create(await readJson(req), context)); return; }
       const match = /^\/api\/orders\/([0-9a-f-]{36})(?:\/(authorize|payment|result|retry))?$/.exec(url.pathname);
       requireValue(match, 404, 'NOT_FOUND', '接口不存在');
       const bearer = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '')?.[1];
@@ -173,7 +223,7 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
       if (req.method === 'POST' && ['authorize', 'payment', 'retry'].includes(action)) {
         limiter.check(`write:${ip}:${id}`, 60, 60_000);
         const body = await readJson(req);
-        if (action === 'authorize') { json(200, await service.authorize(id, bearer, body.signature)); return; }
+        if (action === 'authorize') { json(200, await service.authorize(id, bearer, body.signature, { ...context, turnstileToken: body.turnstileToken, deviceId: body.trialDeviceId })); return; }
         if (action === 'payment') { json(202, await service.claim(id, bearer, body.txHash)); return; }
         json(202, await service.retry(id, bearer)); return;
       }
