@@ -7,7 +7,7 @@
   <meta name="description" content="上传头像，选择 CZ 或何一、身体版型和服装，在浏览器里制作你的纪念合影。">
   <title>偶遇照相馆 · CZ & 何一</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?ver=signatures-20261004">
 </head>
 <body>
   <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -99,13 +99,13 @@
         <div class="collection"><div class="collection-title"><span>偶遇纪念册</span><span id="collectionProgress">0 / 3 个地点</span></div><div class="stamp-row"><span class="stamp" data-stamp="terrace"><svg><use href="#sun"/></svg> 天台晚霞</span><span class="stamp" data-stamp="cafe"><svg><use href="#cup"/></svg> 咖啡偶遇</span><span class="stamp" data-stamp="street"><svg><use href="#city"/></svg> 城市漫步</span></div><p id="collectionNote">收藏一张合影，点亮一个偶遇地点。</p></div>
       </section>
     </div>
-    <footer><span>一张照片，一次特别的偶遇。</span><span>合成图片仅供创作娱乐，不代表真实见面。</span></footer>
+    <footer><span>合影自动附上对应人物的纪念签名。</span><span>合成图片与签名仅供创作娱乐，不代表真实见面或本人现场签署。</span></footer>
   </main>
   <dialog id="albumDialog" aria-labelledby="albumTitle"><div class="dialog-heading"><div><p class="eyebrow">YOUR ENCOUNTERS</p><h2 id="albumTitle">我的合影</h2></div><button id="albumClose" class="icon-button" aria-label="关闭相册"><svg><use href="#close"/></svg></button></div><p class="album-description">合影保存在当前浏览器。喜欢的照片，记得下载带走。</p><div id="albumGrid" class="album-grid"></div></dialog>
   <dialog id="cropDialog" aria-labelledby="cropTitle"><div class="dialog-heading"><h2 id="cropTitle">圈选头像</h2><button id="cropClose" class="icon-button" aria-label="关闭头像圈选"><svg><use href="#close"/></svg></button></div><p class="crop-description">让绿色框包住脸部：从额头到下巴，左右贴近脸颊。手动模式使用柔边轮廓，复杂背景建议换一张照片。</p><canvas id="cropCanvas" width="640" height="480"></canvas><div class="adjust-grid">
     <label for="cropX">左右位置<input id="cropX" type="range" min="5" max="95" value="50"></label><label for="cropY">上下位置<input id="cropY" type="range" min="5" max="95" value="40"></label><label for="cropSize">脸部大小<input id="cropSize" type="range" min="8" max="80" value="30"></label>
   </div><button id="cropConfirm" class="download-button">使用圈选头像</button></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?ver=signatures-20261004"></script>
 </body>
 </html>

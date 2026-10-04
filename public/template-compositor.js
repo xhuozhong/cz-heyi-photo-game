@@ -1,4 +1,5 @@
 // Local photo compositing. No photos or face coordinates are sent to a server.
+import { loadSignature, drawTemplateSignature } from './signature-stamp.js';
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const canvas = (w, h) => Object.assign(document.createElement('canvas'), { width: Math.round(w), height: Math.round(h) });
 const pause = () => new Promise(resolve => requestAnimationFrame(resolve));
@@ -147,7 +148,7 @@ function drawHead(ctx, avatar, target, t, adjustments) {
 export async function createComposition(avatar, options, status = () => {}) {
   status('正在装配合影模板', '匹配场景光线、身体版型和衣服颜色。'); await pause();
   const data = await manifest(), bodyData = data.bodies[options.gender], characterData = data.characters[options.character];
-  const [body, partner, scene, skinMask] = await Promise.all([loadImage(bodyData.srcByOutfit?.[options.outfit] || bodyData.src), loadImage(characterData.src), loadImage(`assets/scenes/${options.scene}.jpg`), bodyData.skinMask ? loadImage(bodyData.skinMask) : null]);
+  const [body, partner, scene, skinMask, signature] = await Promise.all([loadImage(bodyData.srcByOutfit?.[options.outfit] || bodyData.src), loadImage(characterData.src), loadImage(`assets/scenes/${options.scene}.jpg`), bodyData.skinMask ? loadImage(bodyData.skinMask) : null, loadSignature(options.character)]);
   const stage = canvas(1024, 768), base = canvas(1024, 768), ctx = base.getContext('2d');
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
   ctx.save(); ctx.filter = 'blur(1.5px)'; cover(ctx, scene, 1024, 768); ctx.restore();
@@ -165,6 +166,8 @@ export async function createComposition(avatar, options, status = () => {}) {
     const head = tone(avatar.head, options.scene, adjustments.lighting);
     drawHead(out, { ...avatar, head }, face, t, adjustments);
     const vignette = out.createRadialGradient(510, 350, 180, 510, 350, 660); vignette.addColorStop(0, '#17211600'); vignette.addColorStop(1, '#17211628'); out.fillStyle = vignette; out.fillRect(0, 0, 1024, 768);
+    // Each render starts from the clean base, so micro-adjustments never stack signatures.
+    drawTemplateSignature(out, signature, options.character, stage.width, stage.height);
     // The mark is baked into the image, including downloads and browser albums.
     const label = '合成合影 · 偶遇照相馆'; out.font = '500 17px "Microsoft YaHei", sans-serif';
     const w = out.measureText(label).width + 26; out.fillStyle = '#152015b8'; out.fillRect(998 - w, 709, w, 34); out.fillStyle = '#fff'; out.textBaseline = 'middle'; out.fillText(label, 1011 - w, 727);

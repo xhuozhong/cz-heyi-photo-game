@@ -1,4 +1,5 @@
 import { paidConfig as config } from './paid-config.js';
+import { stampPhotoBlob, SIGNATURE_VERSION } from './signature-stamp.js';
 
 const $ = id => document.getElementById(id);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -217,10 +218,15 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
   }
   async function showResult(order, run) {
     setStage('generating', '合影已完成，正在打开照片。');
+    const resultMeta = { ...state.order.options, character: state.order.character, scene: state.order.scene, orderId: state.order.id };
     const image = await request(`/api/orders/${encodeURIComponent(order.id)}/result`, { token: state.order.token, blob: true });
     if (!/^image\/(jpeg|png|webp)$/.test(image.type) || !image.size || image.size > 40 * 1024 * 1024) throw userError('合影暂时无法打开，可稍后重新查看订单。');
     if (run !== operation) return;
-    onResult({ blob: image, ...state.order.options, character: state.order.character, scene: state.order.scene, photoMethod: 'ai', orderId: state.order.id });
+    // Always stamp the pristine server result, including when reopening an order.
+    // No face or original watermark is covered: the signature gets its own footer.
+    const stamped = await stampPhotoBlob(image, resultMeta.character, 'ai');
+    if (run !== operation) return;
+    onResult({ blob: stamped, ...resultMeta, photoMethod: 'ai', signatureVersion: SIGNATURE_VERSION });
     setStage('completed', labels.completed);
   }
   async function monitor(run) {

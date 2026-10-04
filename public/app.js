@@ -1,5 +1,6 @@
-import { prepareAvatar, createComposition, encodePhoto, AvatarError } from './template-compositor.js';
-import { createPaidMode } from './paid-mode.js';
+import { prepareAvatar, createComposition, encodePhoto, AvatarError } from './template-compositor.js?ver=signatures-20261004';
+import { createPaidMode } from './paid-mode.js?ver=signatures-20261004';
+import { SIGNATURE_VERSION } from './signature-stamp.js';
 const $ = id => document.getElementById(id);
 const sceneInfo = {
   terrace: { name: '天台晚霞', kicker: 'SCENE 01 / ROOFTOP AT SUNSET', caption: '晚霞，和一次恰好的相遇。' },
@@ -38,6 +39,12 @@ function syncSelection() {
 }
 function setStage(url, alt, badge, upload = false) {
   $('photoStage').classList.toggle('upload-view', upload);
+  // AI photos include a signature footer; use their actual ratio to show the
+  // whole picture instead of cropping it to the free template's 4:3 frame.
+  $('photoStage').style.aspectRatio = '4 / 3';
+  $('stageImage').onload = () => {
+    if (state.result?.photoMethod === 'ai' && !upload) $('photoStage').style.aspectRatio = `${$('stageImage').naturalWidth} / ${$('stageImage').naturalHeight}`;
+  };
   if (url) { $('stageImage').src = url; $('stageImage').alt = alt; $('stageImage').hidden = false; $('emptyStage').hidden = true; }
   else {
     $('stageImage').hidden = true; $('stageImage').removeAttribute('src'); $('emptyStage').hidden = false;
@@ -111,7 +118,7 @@ async function shoot() {
     const avatar = await prepareAvatar(state.photo.dataURL, state.subject, state.manual, status);
     state.composition = await createComposition(avatar, options, status); resetSliders();
     const blob = await encodePhoto(state.composition.canvas);
-    state.result = { id: crypto.randomUUID(), blob, url: URL.createObjectURL(blob), ...options, photoMethod: 'template', manual: avatar.manual, createdAt: Date.now() };
+    state.result = { id: crypto.randomUUID(), blob, url: URL.createObjectURL(blob), ...options, photoMethod: 'template', signatureVersion: SIGNATURE_VERSION, manual: avatar.manual, createdAt: Date.now() };
     feedback(avatar.manual ? '已用手动圈选合成。可以微调头像位置和明暗，使衔接更自然。' : '拍好了！可微调头像位置和明暗，再收藏或下载带走。', true); toast('咔嚓！这次偶遇已定格。');
   } catch (error) {
     feedback(error.message || '这次没拍成功，请重新试一张清晰的头像。');
@@ -189,8 +196,8 @@ async function saveResult() {
   $('saveButton').disabled = true;
   try {
     if (state.album.length >= 12 && !state.album.some((photo) => photo.id === result.id)) { toast('相册已收满 12 张。先下载喜欢的合影，再腾出一个位置。'); if (state.result?.id === result.id) $('saveButton').disabled = false; return; }
-    const { id, blob, character, scene, createdAt, photoMethod, gender, body, outfit, manual } = result;
-    await albumOperation('readwrite', (store) => store.put({ id, blob, character, scene, createdAt, photoMethod, gender, body, outfit, manual }));
+    const { id, blob, character, scene, createdAt, photoMethod, gender, body, outfit, manual, signatureVersion } = result;
+    await albumOperation('readwrite', (store) => store.put({ id, blob, character, scene, createdAt, photoMethod, gender, body, outfit, manual, signatureVersion }));
     await loadAlbum(); if (state.result?.id === id) $('saveButton').innerHTML = '<svg><use href="#check"/></svg> 已收藏'; toast(`已收藏，点亮「${sceneInfo[scene].name}」！`);
   } catch { toast('浏览器暂时无法保存合影，请直接下载。'); if (state.result?.id === result.id) $('saveButton').disabled = false; }
 }
@@ -251,7 +258,7 @@ paid = createPaidMode({
     syncSelection(); showCurrentInput(); feedback('AI 合影已完成。可下载或收藏；每笔订单对应一次生成。', true); toast('你的 AI 合影已完成。');
   },
 });
-window.render_game_to_text = () => JSON.stringify({ mode: state.busy ? 'composing' : state.result ? 'result' : state.photo ? 'ready' : 'setup', character: state.character, scene: state.scene, gender: state.gender, body: state.body, outfit: state.outfit, photoLoaded: !!state.photo, photoMethod: state.result?.photoMethod || null, manualCrop: !!state.manual, resultId: state.result?.id || null, albumCount: state.album.length, unlockedScenes: [...new Set(state.album.map(photo => photo.scene))], paid: paid.snapshot() });
+window.render_game_to_text = () => JSON.stringify({ mode: state.busy ? 'composing' : state.result ? 'result' : state.photo ? 'ready' : 'setup', character: state.character, scene: state.scene, gender: state.gender, body: state.body, outfit: state.outfit, photoLoaded: !!state.photo, photoMethod: state.result?.photoMethod || null, signatureCharacter: state.result?.signatureVersion ? state.result.character : null, signatureVersion: state.result?.signatureVersion || null, manualCrop: !!state.manual, resultId: state.result?.id || null, albumCount: state.album.length, unlockedScenes: [...new Set(state.album.map(photo => photo.scene))], paid: paid.snapshot() });
 syncSelection(); refreshControls(); loadAlbum();
 
 // Feature-detected page tools use the same choices as the visible controls.

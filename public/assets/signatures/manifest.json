@@ -1,0 +1,54 @@
+{
+  "source": "User-supplied signature artwork on 2026-10-04",
+  "purpose": "Decorative commemorative signature in composite game photos; not a live signature or endorsement.",
+  "records": [
+    {
+      "character": "heyi",
+      "sourceFile": "1-1000092147.png",
+      "sourceSha256": "eba0cd4364b8b0e900a8ed055890ec47e5cd6a67db1402626bfe75ff908b4c64",
+      "sourceWidth": 1448,
+      "sourceHeight": 1086,
+      "sourceHasAlpha": true,
+      "alphaRange": [
+        0,
+        255
+      ],
+      "visiblePixels": 95220,
+      "crop": {
+        "left": 79,
+        "top": 144,
+        "width": 1307,
+        "height": 848
+      },
+      "file": "heyi.png",
+      "width": 1323,
+      "height": 864,
+      "sha256": "35cb07f13d8fee82a7dbfda51c41317a071d8ca2b7fb1784abc3c7c6a0568b2e",
+      "changes": "Only empty transparent margins cropped and 8px transparent padding added. Original strokes, colors and alpha retained."
+    },
+    {
+      "character": "cz",
+      "sourceFile": "2-1000092146.png",
+      "sourceSha256": "792527118b2fdf2d183a3af93b697ef3385daa6202a42467f6bdc899045d1c7b",
+      "sourceWidth": 2172,
+      "sourceHeight": 724,
+      "sourceHasAlpha": true,
+      "alphaRange": [
+        0,
+        255
+      ],
+      "visiblePixels": 133152,
+      "crop": {
+        "left": 425,
+        "top": 49,
+        "width": 1464,
+        "height": 638
+      },
+      "file": "cz.png",
+      "width": 1480,
+      "height": 654,
+      "sha256": "1ecf1c14a4214bd7ea9d479efc90057cc9b4761fa93cbd0903238bff59ddf6fc",
+      "changes": "Only empty transparent margins cropped and 8px transparent padding added. Original strokes, colors and alpha retained."
+    }
+  ]
+}
