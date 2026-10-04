@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "canvas": {
     "width": 384,
     "height": 1152
@@ -7,48 +7,52 @@
   "coordinateSpace": "per-asset pixels",
   "characters": {
     "cz": {
-      "src": "assets/templates/cz.png",
+      "src": "assets/templates/cz-generated-v3.webp",
       "face": {
-        "x": 270,
-        "y": 144,
-        "width": 246,
-        "height": 268
+        "x": 408,
+        "y": 99,
+        "width": 229,
+        "height": 271
       },
       "fullHead": {
-        "x": 234,
-        "y": 102,
-        "width": 321,
-        "height": 380
+        "x": 387,
+        "y": 51,
+        "width": 264,
+        "height": 324
       },
       "neck": {
-        "x": 392,
-        "y": 486
+        "x": 519,
+        "y": 415
       },
-      "width": 768,
-      "height": 2304,
-      "sourceDetail": "Same supplied reference sheet: close-up head + original front-view body"
+      "width": 1024,
+      "height": 1536,
+      "sha256": "144d94ae3fe88c332977041d479cc2ef742714700797e22ac6cb15906468253a",
+      "sourceSha256": "db2449f2638497e5a6bb90317946c956427ee92d9e06af7c5b44611afadce966",
+      "sourceDetail": "ImageGen continuous portrait using the user-supplied character reference. Head, neck, shoulders and body are one generated transparent PNG; no head replacement or pixel warp."
     },
     "heyi": {
-      "src": "assets/templates/heyi.png",
+      "src": "assets/templates/heyi-generated-v3.webp",
       "face": {
-        "x": 262,
-        "y": 84,
-        "width": 240,
-        "height": 288
+        "x": 387,
+        "y": 119,
+        "width": 234,
+        "height": 271
       },
       "fullHead": {
-        "x": 145,
-        "y": 0,
-        "width": 450,
-        "height": 658
+        "x": 286,
+        "y": 30,
+        "width": 497,
+        "height": 740
       },
       "neck": {
-        "x": 404,
-        "y": 450
+        "x": 518,
+        "y": 430
       },
-      "width": 768,
-      "height": 2304,
-      "sourceDetail": "Same supplied reference sheet: close-up head + original front-view body"
+      "width": 1024,
+      "height": 1536,
+      "sha256": "90ecd189cb419689161c52ca96c12c9b8fd643ec96113b25d1a4d2bd074c156e",
+      "sourceSha256": "1493c27c08d4b77bb9efb4549036703c1120fb0c823078d85e154fb6e2e7b177",
+      "sourceDetail": "ImageGen continuous portrait using the user-supplied character reference. Head, neck, shoulders and body are one generated transparent PNG; no head replacement or pixel warp."
     }
   },
   "bodies": {
@@ -154,9 +158,5 @@
         "height": 815
       }
     }
-  },
-  "characterCanvas": {
-    "width": 768,
-    "height": 2304
   }
 }

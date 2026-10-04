@@ -91,7 +91,7 @@ export async function prepareAvatar(dataURL, subject = 'auto', manual = null, st
   return { head, box: face, angle: clamp(angle, -.18, .18), skinRGB: skinRGB[0] ? skinRGB : null, manual: !!manual };
 }
 async function manifest() {
-  if (!manifestPromise) manifestPromise = fetch('./assets/templates/manifest.json').then(r => { if (!r.ok) throw new Error('合影模板暂时打不开，请刷新后重试。'); return r.json(); }).catch(e => { manifestPromise = null; throw e; });
+  if (!manifestPromise) manifestPromise = fetch('./assets/templates/manifest.json?ver=generated-templates-20261004').then(r => { if (!r.ok) throw new Error('合影模板暂时打不开，请刷新后重试。'); return r.json(); }).catch(e => { manifestPromise = null; throw e; });
   return manifestPromise;
 }
 function cover(ctx, image, w, h) {
