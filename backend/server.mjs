@@ -2,6 +2,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, realpath, stat } from 'node:fs/promises';
+import { gzip } from 'node:zlib';
+import { promisify } from 'node:util';
 import { PaidService } from './service.mjs';
 import { ApiError, requireValue } from './errors.mjs';
 import { createChainProvider } from './payment.mjs';
@@ -10,6 +12,50 @@ import { MAX_PHOTO_BYTES } from './images.mjs';
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const JSON_LIMIT = Math.ceil(MAX_PHOTO_BYTES / 3) * 4 + 16_384;
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.tflite': 'application/octet-stream', '.md': 'text/plain; charset=utf-8' };
+const gzipBytes = promisify(gzip);
+const STATIC_GZIP_CACHE_BYTES = 16 * 1024 * 1024;
+const STATIC_GZIP_CACHE_ENTRIES = 128;
+
+function acceptsGzip(header) {
+  if (typeof header !== 'string') return false;
+  const declarations = header.split(',').map(part => part.trim().split(';').map(value => value.trim()))
+    .filter(([coding]) => coding.toLowerCase() === 'gzip');
+  // A wildcard is not explicit support. An explicit zero/invalid quality is a
+  // veto even when another duplicate declaration or wildcard says otherwise.
+  if (!declarations.length) return false;
+  return declarations.every(([, ...parameters]) => {
+    const quality = parameters.filter(value => /^q\s*=/i.test(value));
+    if (!quality.length) return true;
+    return quality.length === 1 && /^q\s*=\s*(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/i.test(quality[0])
+      && Number(quality[0].split('=')[1].trim()) > 0;
+  });
+}
+
+function staticGzipCache() {
+  const entries = new Map(); const pending = new Map(); let bytes = 0;
+  const version = info => `${info.mtimeMs}:${info.size}`;
+  const remove = filename => { const entry = entries.get(filename); if (entry) { bytes -= entry.content.length; entries.delete(filename); } };
+  return async (filename, info) => {
+    const stamp = version(info); const cached = entries.get(filename);
+    if (cached?.stamp === stamp) { entries.delete(filename); entries.set(filename, cached); return cached.content; }
+    remove(filename);
+    const key = `${filename}\0${stamp}`;
+    if (pending.has(key)) return pending.get(key);
+    const operation = (async () => {
+      const content = await gzipBytes(await readFile(filename));
+      // Do not retain a variant if the source changed during compression.
+      const after = await stat(filename);
+      if (version(after) === stamp && content.length <= STATIC_GZIP_CACHE_BYTES) {
+        remove(filename);
+        while (entries.size && (bytes + content.length > STATIC_GZIP_CACHE_BYTES || entries.size >= STATIC_GZIP_CACHE_ENTRIES)) remove(entries.keys().next().value);
+        entries.set(filename, { stamp, content }); bytes += content.length;
+      }
+      return content;
+    })().finally(() => pending.delete(key));
+    pending.set(key, operation);
+    return operation;
+  };
+}
 
 export function loadConfig(env = process.env) {
   const port = Number(env.PORT || 4176);
@@ -52,9 +98,13 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
   chain ??= createChainProvider(config.rpcUrl);
   const service = new PaidService(config, chain, provider);
   await service.open();
+  // Warm in the background: opening the listener does not wait for serial CLI
+  // preflight commands, and the first health snapshot remains fail-closed.
+  service.refreshHealth();
   service.autoProcess = autoProcess;
   const limiter = new RateLimiter();
   const publicDir = path.join(config.rootDir, 'public');
+  const compressedStatic = staticGzipCache();
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -71,14 +121,27 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
         let actual;
         try { actual = await realpath(filename); } catch { throw new ApiError(404, 'NOT_FOUND', '文件不存在'); }
         requireValue(actual.startsWith(root + path.sep), 404, 'NOT_FOUND', '文件不存在');
-        const type = MIME[path.extname(actual).toLowerCase()];
-        requireValue(type && (await stat(actual)).isFile(), 404, 'NOT_FOUND', '文件不存在');
-        res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
-        res.writeHead(200, { 'Content-Type': type });
-        let content = req.method === 'HEAD' ? undefined : await readFile(actual);
+        const extension = path.extname(actual).toLowerCase();
+        const type = MIME[extension];
+        const info = await stat(actual);
+        requireValue(type && info.isFile(), 404, 'NOT_FOUND', '文件不存在');
+        const relative = path.relative(root, actual).split(path.sep).join('/');
+        const cacheable = /^\/(vendor|assets)\//i.test(pathname) && /^(vendor|assets)\//i.test(relative)
+          && extension !== '.html' && path.basename(actual).toLowerCase() !== 'paid-config.js';
+        const compressible = cacheable && /^\/vendor\//i.test(pathname) && /^vendor\//i.test(relative)
+          && ['.wasm', '.tflite', '.js', '.mjs'].includes(extension);
+        const compressed = compressible && acceptsGzip(req.headers['accept-encoding']);
+        let content = compressed ? await compressedStatic(actual, info)
+          : req.method === 'HEAD' && pathname !== '/paid-config.js' ? undefined : await readFile(actual);
         // The backend deployment enables its own same-origin API without changing the Pages free edition.
-        if (content && pathname === '/paid-config.js') content = content.toString('utf8').replace("apiBase: ''", "apiBase: '/'");
-        res.end(content); return;
+        if (content && pathname === '/paid-config.js') content = Buffer.from(content.toString('utf8').replace("apiBase: ''", "apiBase: '/'"));
+        res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+        if (cacheable) res.setHeader('Cache-Control', 'public, max-age=3600, no-transform');
+        if (compressible) res.setHeader('Vary', 'Accept-Encoding');
+        if (compressed) res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Content-Length', content?.length ?? info.size);
+        res.writeHead(200, { 'Content-Type': type });
+        res.end(req.method === 'HEAD' ? undefined : content); return;
       }
       const origin = req.headers.origin;
       if (origin) {
@@ -94,7 +157,7 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
       if (req.method === 'POST') requireValue(origin && config.allowedOrigins.includes(origin), 403, 'ORIGIN_REQUIRED', '请求需要有效来源');
       const ip = req.socket.remoteAddress || 'unknown'; // Never trust client-controlled X-Forwarded-For.
       limiter.check(`all:${ip}`, 240, 60_000);
-      if (req.method === 'GET' && url.pathname === '/api/health') { json(200, await service.ready()); return; }
+      if (req.method === 'GET' && url.pathname === '/api/health') { json(200, service.ready()); return; }
       if (req.method === 'GET' && url.pathname === '/api/trial') { json(200, await service.trial(url.searchParams.get('address'))); return; }
       if (req.method === 'POST' && url.pathname === '/api/orders') { limiter.check(`new:${ip}`, 6, 60_000); json(201, await service.create(await readJson(req))); return; }
       const match = /^\/api\/orders\/([0-9a-f-]{36})(?:\/(authorize|payment|result|retry))?$/.exec(url.pathname);
@@ -115,7 +178,10 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
       }
       throw new ApiError(405, 'METHOD_NOT_ALLOWED', '不支持此请求');
     } catch (error) {
-      if (!res.headersSent) json(error instanceof ApiError ? error.status : 503, { error: { code: error instanceof ApiError ? error.code : 'SERVICE_ERROR', message: error instanceof ApiError ? error.message : '服务暂时不可用，请稍后再试' } });
+      if (!res.headersSent) {
+        res.setHeader('Cache-Control', 'no-store'); res.removeHeader('Content-Encoding'); res.removeHeader('Content-Length');
+        json(error instanceof ApiError ? error.status : 503, { error: { code: error instanceof ApiError ? error.code : 'SERVICE_ERROR', message: error instanceof ApiError ? error.message : '服务暂时不可用，请稍后再试' } });
+      }
       else res.destroy();
     }
   });

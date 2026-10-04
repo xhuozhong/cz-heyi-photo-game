@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { LibtvProvider, parseCliJson, makePaidPhotoPrompt } from '../backend/libtv-provider.mjs';
+import { LibtvProvider, parseCliJson, runLibtvCli, makePaidPhotoPrompt } from '../backend/libtv-provider.mjs';
 
 const projectUuid = 'a'.repeat(32);
 async function fixture(t, overrides = {}) {
@@ -57,6 +57,24 @@ test('CLI parser accepts whole JSON and NDJSON terminal output, rejects non-JSON
   assert.deepEqual(parseCliJson('{"ok":true}'), { ok: true });
   assert.deepEqual(parseCliJson('progress\n{"nodeKey":"a"}\n{"status":"completed"}'), { status: 'completed' });
   assert.throws(() => parseCliJson('unreadable'));
+});
+test('real child-process download accepts exit-zero text or empty stdout while other commands require JSON', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'photo-libtv-child-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // Node executes these fake command-named scripts. No real LibTV binary, account
+  // or generation is invoked; this exercises the actual spawn/stdout boundary.
+  const download = path.join(root, 'download');
+  const model = path.join(root, 'model');
+  await writeFile(download, "process.stdout.write('Saved image to private output\\n');");
+  assert.deepEqual(await runLibtvCli(process.execPath, ['download'], root), { success: true });
+  await writeFile(download, 'process.exitCode = 0;');
+  assert.deepEqual(await runLibtvCli(process.execPath, ['download'], root), { success: true });
+  await writeFile(download, "process.stdout.write('No completed image'); process.exitCode = 1;");
+  await assert.rejects(runLibtvCli(process.execPath, ['download'], root), /operation failed/);
+  await writeFile(model, "process.stdout.write('Unexpected non-JSON response');");
+  await assert.rejects(runLibtvCli(process.execPath, ['model'], root), /unreadable response/);
+  await writeFile(model, "process.stdout.write(JSON.stringify({ modality: 'image' }));");
+  assert.deepEqual(await runLibtvCli(process.execPath, ['model'], root), { modality: 'image' });
 });
 test('disabled and unbudgeted services cannot submit or even call the CLI', async t => {
   const f = await fixture(t, { enabled: false });

@@ -33,7 +33,14 @@ export function runLibtvCli(cliPath, args, cwd) {
     child.once('close', code => {
       if (code !== 0 || overflow) reject(new Error('LibTV CLI operation failed'));
       else {
-        try { resolve(parseCliJson(stdout)); } catch (error) { reject(error); }
+        try { resolve(parseCliJson(stdout)); }
+        catch (error) {
+          // Official download prints a saved-file message (or nothing), rather
+          // than JSON. Exit zero is only its transport result: download() still
+          // requires exactly one local image, and saveResult decodes it later.
+          if (args[0] === 'download') resolve({ success: true });
+          else reject(error);
+        }
       }
     });
   });

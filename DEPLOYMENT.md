@@ -1,12 +1,24 @@
 # 免费版与付费 AI 合影部署
 
-付费模式已开发，但本包默认不收款。用户当前没有服务器；不能把这份部署包当作已上线收费服务。免费版仍可在 GitHub Pages 使用。
+AI 合影已实际部署在 [https://xhuozhong.com/](https://xhuozhong.com/)。运营方 Windows 本机持续运行后端，通过 Cloudflare Tunnel 提供 HTTPS 网页与 API，并已启用当前用户登录自启。电脑须保持开机、用户登录与联网；公开源码仍默认不收款，GitHub Pages 继续提供纯免费模板版。
 
 AI 合影提供 **每个钱包首次免费，之后每次 0.001 BNB**（1,000,000,000,000,000 wei），网络为 **BNB Smart Chain 主网，chainId 56**。收款地址固定为 `0x7C4383da12264BeD66D125EF34d4a4A8Bb8979F2`。首次免费只需钱包签名，不发送链上交易，也没有网络手续费；付费订单的钱包另外支付网络手续费。后端没有钱包私钥，只读核验签名与链上交易。升级前的 0.0001 BNB 或 0.0014 BNB 旧订单沿用订单中记录的金额，新订单使用新价格。
 
 ## 服务器准备
 
-ChatGPT Sites 可托管支持其运行环境的网页和游戏，但官方明确不允许在那里启用金融交易，因此本项目的 BNB 收费服务不能部署到 Sites。依据：[Sites 的限制和不支持用途](https://learn.chatgpt.com/docs/sites?surface=app)。当前 Node/LibTV 后端须部署到独立服务器。
+### 本次本机与 Tunnel 部署
+
+`https://xhuozhong.com/` 已提供 AI 合影网页与同域 `/api/`，由运营方本机 Node 后端处理。后端仅监听本机回环地址，Cloudflare Tunnel 对外提供 HTTPS。当前本机配置使用 `FRONTEND_ORIGINS=https://xhuozhong.com` 与 `SERVICE_DOMAIN=xhuozhong.com`；部署负责人已确认公开 HTTPS 返回成功、health 就绪并完成一次真实首次免费 AI 合影。
+
+运营方已批准 `LIBTV_GENERATION_BUDGET=100` 的累计总上限。首次免费、后续付费与本轮实际生成共同消耗这 100 次；已经写入 `provider-budget.json` 的生成意图计入上限，包括结果不确定的提交。它不是实时积分余额，也不是每个钱包的额度。源码示例继续默认预算 0，真实值只配置在本机私有环境文件；增加上限须另行获得运营方授权并保留完整历史账本。
+
+登录信息、隧道令牌、环境配置、订单/预算账本、玩家照片与运行日志都只在运营方本机私有目录保存，不进入 GitHub。Cloudflare 官方程序使用令牌文件启动：`cloudflared tunnel --no-autoupdate run --token-file <私有令牌文件绝对路径>`；不要把令牌正文放在命令行、网页或日志中。
+
+本机运维包提供隐藏运行、独占锁、崩溃退避重启以及 `start.ps1` / `stop.ps1` / `status.ps1`，这些 runtime 文件不属于本次公开源码同步内容。当前用户登录任务已启用并实际接管；测试崩溃与停止/启动恢复保留订单和预算账本。可选 `preventSleep:true` 只在监督程序运行期间阻止自动系统睡眠，允许屏幕关闭，不更改全局电源计划。电脑关机、注销或断网时服务无法持续对外提供。配置变更通过停止并重启同一个监督程序生效，应在正在生成的任务结束后停机。
+
+仓库的 [免费模板版](https://xhuozhong.github.io/cz-heyi-photo-game/) 仅发布 `public/`，继续硬性禁止调用钱包、付款与 AI 接口。它与本机 AI 后端分别运行，不能在 Pages 上开放收费。
+
+ChatGPT Sites 可托管支持其运行环境的网页和游戏，但官方明确不允许在那里启用金融交易，因此本项目的 BNB 收费服务不能部署到 Sites。依据：[Sites 的限制和不支持用途](https://learn.chatgpt.com/docs/sites?surface=app)。当前 Node/LibTV 后端可运行在持续在线的本机或独立服务器。
 
 使用一台持续在线、有私有持久磁盘的 Windows 或 Linux 服务器。推荐 Node.js 24，并安装 pnpm 11.19.0；依赖由 `pnpm-lock.yaml` 固定。不要使用没有持久存储的临时函数或多个副本。
 
@@ -54,13 +66,17 @@ sh deploy/start-paid.sh
 
 默认监听 `127.0.0.1:4176`。用 HTTPS 反向代理向外提供整个网站和 API，参考 `deploy/Caddyfile.example`。根路径同时承载免费版和付费版，网页使用同域 API。不要让浏览器访问 LibTV 登录信息或提供任意服务器命令执行入口。
 
+为避免大型模型每次拍摄都重新经过 Tunnel 下载，后端仅对 `public/vendor/` 和 `public/assets/` 中成功 GET/HEAD 设置 `public, max-age=3600, no-transform`。vendor 的 WASM、TFLite、JS/MJS 在客户端明确接受 gzip（且非 `q=0`）时源端压缩，保留 MIME、`Vary: Accept-Encoding` 与准确长度；HEAD 不发送正文。压缩结果在内存中最多保留 16 MiB/128 个条目，并按源文件修改时间及大小失效，不创建可被下载的缓存目录。HTML、`paid-config.js`、API、错误响应和玩家私有结果继续 `no-store`；图片不会重复 gzip。
+
 Linux 可按 `deploy/cz-heyi-photo-game.service.example` 配置 systemd 常驻服务，替换系统用户、安装目录和 Node 的绝对路径。LibTV 必须在这个服务用户下登录；配置私有数据目录的写入权限。Windows 可使用管理员已有的进程管理工具常驻运行。先检查默认关闭收款的站点，再配置开机启动；关闭 SSH 会话后也应检查服务仍在线。
 
 ## 正式开放
 
-部署并检查静态网页、WASM、模型和免费合成可用；保持收款关闭。管理员确认 LibTV 登录、画布、模型、预算与 RPC 就绪后，设置 `PAID_ENABLED=true`，重启同一个后端进程。访问 `/api/health`，只有 `ready:true` 才能开放付款按钮。
+部署并检查静态网页、WASM、模型和免费合成可用；保持收款关闭。管理员确认 LibTV 登录、画布、模型、预算与 RPC 就绪后，设置 `PAID_ENABLED=true`，重启同一个后端进程。访问 `/api/health`，只有 `ready:true` 才能开放付款按钮。Health 会立即返回安全快照并在后台预热/刷新：首次核验或超过 60 秒的结果返回 `ready:false, checking:true`，此时允许稍后重试，禁止请求签名、生成或付款。成功结果缓存 20 秒，刷新去重；创建订单、资格查询与授权始终等待新的实际检查，不能用旧缓存绕过不可用状态。
 
-开发验证使用了模拟链和模拟生成服务；没有发生真实 BNB 转账，也没有运行收费 LibTV 生图。正式营业前仍需由运营方自愿完成一笔真实钱包付款与实际出图验收，检查费用、画面质量和服务响应。本包不会代替用户签名转账。
+本轮 **63 项自动测试通过**，使用模拟链、CLI 与生成服务，并覆盖静态 gzip、缓存和私有响应隔离，该次自动测试没有发生真实 BNB 转账或 LibTV 生图。部署负责人另已完成一次真实首次免费 AI 合影：截至本次检查，累计 100 次生成预算已使用 1 次、剩余 99 次，未进行真实 BNB 转账。本包不会代替用户签名转账。
+
+最终公网页面实际 Chrome 回归 **13 项通过**（免费模板 8 项＋已完成真实 AI 订单只读领取 5 项）。桌面/手机使用 HTTP/2，实际 WASM 压缩传输首次约 4.31/17.50 秒，二次磁盘缓存无网络传输；CZ/何一免费签名、下载与相册正常。真实 AI 原订单的新标签恢复及重复领取得到相同 659,363 字节 JPEG（2048×1785），仅有一层 256 像素的 CZ 签名底栏，原 AI/LibTV 标记保留。这次回归没有钱包调用、POST、重试或新生成，也未见页面/资源错误；只读领取不再次消耗预算。
 
 玩家流程为：选择 AI 合影 → 同意上传头像供服务方与 LibTV 处理 → 连接钱包并查询首次免费资格 → 签名绑定本次订单。首次免费的订单直接进入 LibTV 生成；后续订单在钱包单独确认 0.001 BNB 转账、链上最终确认后生成，完成后可下载或收藏。交易 `data` 中的订单标识必须保留；手动普通转账或相同金额的历史转账不能自动领取本次服务。
 

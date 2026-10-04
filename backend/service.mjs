@@ -10,6 +10,9 @@ import { CHAIN_ID, PRICE_WEI, PRICE_BNB, RECIPIENT, TX_PATTERN, chainPreflight, 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const unpaid = order => ['awaiting_authorization', 'awaiting_payment'].includes(order.status);
 const IN_PROGRESS = ['queued', 'submitting', 'generating'];
+const HEALTH_TTL_MS = 20_000;
+const HEALTH_MAX_STALE_MS = 60_000;
+const HEALTH_CHECKING_REASON = '正在核验 AI 服务，请稍后重试';
 
 export class PaidService {
   constructor(config, chain, provider) {
@@ -18,22 +21,81 @@ export class PaidService {
     this.provider = provider;
     this.store = new OrderStore(this.config.dataDir);
     this.processing = false;
+    this.healthWaiters = [];
+    this.healthEpoch = 0;
+    this.healthCapacityUpdating = false;
   }
   async open() { await this.store.open(); }
-  async close() { await this.activeProcessing; await this.store.close(); }
-  async ready(fresh = false) {
-    if (!fresh && this.healthCache && Date.now() - this.healthCache.at < 10_000) return this.healthCache.value;
+  async close() {
+    this.healthClosed = true;
+    for (const resolve of this.healthWaiters.splice(0)) resolve(this.healthValue({ ready: false, checking: true, reason: HEALTH_CHECKING_REASON }));
+    await this.activeProcessing;
+    await this.healthFlight;
+    await this.store.close();
+  }
+  healthValue(value) {
+    return { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: PRICE_BNB, priceWei: PRICE_WEI, firstFree: this.config.firstFree, trialPolicy: 'once_per_wallet', provider: 'libtv' };
+  }
+  // Health is a fast read-only snapshot. It never waits for the CLI/RPC check.
+  // Successful snapshots can survive one refresh, but never beyond 60 seconds.
+  ready(fresh = false) {
+    if (fresh) {
+      if (this.healthClosed) return Promise.resolve(this.healthValue({ ready: false, checking: true, reason: HEALTH_CHECKING_REASON }));
+      return new Promise(resolve => { this.healthWaiters.push(resolve); this.refreshHealth(); });
+    }
+    if (!this.config.enabled) return this.healthValue({ ready: false, reason: 'AI 付费模式尚未开放' });
+    const age = this.healthCache ? Date.now() - this.healthCache.at : Infinity;
+    if (!this.healthCache || age >= HEALTH_TTL_MS) this.refreshHealth();
+    if (!this.healthCapacityUpdating && this.healthCache && age < HEALTH_TTL_MS) return { ...this.healthCache.value };
+    if (!this.healthCapacityUpdating && this.healthCache?.value.ready && age < HEALTH_MAX_STALE_MS) {
+      return { ...this.healthCache.value, refreshing: true };
+    }
+    return this.healthValue({ ready: false, checking: true, reason: HEALTH_CHECKING_REASON });
+  }
+  invalidateHealth() {
+    this.healthEpoch++;
+    this.healthCache = undefined;
+  }
+  // Batch callers until the next check actually starts. A fresh request arriving
+  // during an older check waits for a subsequent round; it cannot authorize a
+  // payment using a check that started before that request. Health refreshes and
+  // fresh rounds share this serial worker, so concurrent requests do not fan out.
+  refreshHealth() {
+    if (this.healthClosed || this.healthFlight || this.healthScheduled) return;
+    this.healthScheduled = true;
+    queueMicrotask(() => {
+      this.healthScheduled = false;
+      if (this.healthClosed || this.healthFlight) return;
+      const waiters = this.healthWaiters.splice(0);
+      const epoch = this.healthEpoch;
+      this.healthFlight = Promise.resolve().then(() => this.checkReady()).then(value => {
+        if (epoch !== this.healthEpoch || this.healthClosed || this.healthCapacityUpdating) {
+          value = this.healthValue({ ready: false, checking: true, reason: HEALTH_CHECKING_REASON });
+        } else this.healthCache = { at: Date.now(), value };
+        return value;
+      }).finally(() => {
+        this.healthFlight = undefined;
+        if (this.healthWaiters.length) this.refreshHealth();
+      }).then(value => {
+        // Complete fresh callers only after this flight is released, so their
+        // next action can immediately request a genuinely subsequent check.
+        for (const resolve of waiters) resolve(value);
+        return value;
+      });
+    });
+  }
+  async checkReady() {
     let value;
     try {
       requireValue(this.config.enabled, 503, 'PAID_DISABLED', 'AI 付费模式尚未开放');
+      requireValue(!this.healthCapacityUpdating, 503, 'CAPACITY_UPDATING', HEALTH_CHECKING_REASON);
       const result = await this.provider?.preflight();
       requireValue(result?.ready, 503, 'PROVIDER_UNAVAILABLE', result?.reason || 'AI 生成服务尚未就绪');
+      requireValue(result.remainingGenerations === undefined || (Number.isSafeInteger(result.remainingGenerations) && result.remainingGenerations > 0), 503, 'CAPACITY_EXHAUSTED', '本期 AI 合影名额已用完');
       await chainPreflight(this.chain);
       value = { ready: true };
     } catch (error) { value = { ready: false, reason: error instanceof ApiError ? error.message : '生成或链上服务暂不可用' }; }
-    value = { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: PRICE_BNB, priceWei: PRICE_WEI, firstFree: this.config.firstFree, trialPolicy: 'once_per_wallet', provider: 'libtv' };
-    this.healthCache = { at: Date.now(), value };
-    return value;
+    return this.healthValue(value);
   }
   async requireReady() { const health = await this.ready(true); requireValue(health.ready, 503, 'SERVICE_UNAVAILABLE', health.reason); }
   wallet(address) {
@@ -260,12 +322,17 @@ export class PaidService {
         try { await this.requireReady(); } catch { continue; }
         // This intent is committed BEFORE entering the credit-consuming provider operation.
         await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'submitting'; current.submissionStartedAt = Date.now(); current.message = 'AI 正在提交生成任务'; await this.store.save(); });
+        // Submission may consume the final configured generation. Invalidate
+        // before entering it, reject older in-flight health results by epoch,
+        // and refresh only after the provider has finished updating its journal.
+        this.healthCapacityUpdating = true; this.invalidateHealth();
         let submission;
         try { submission = await this.provider.submit(job); requireValue(typeof submission?.providerJobId === 'string' && submission.providerJobId.length > 0, 500, 'NO_PROVIDER_JOB', '生成任务信息缺失'); }
         catch {
           await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'review_required'; current.message = current.billingMode === 'free_trial' ? '生成提交状态需核对，首次免费订单已保留；请恢复原订单，不会自动重复扣额度' : '生成提交状态需核对，付款已保留；不会自动重复扣额度'; await this.store.save(); });
           continue;
         }
+        finally { this.healthCapacityUpdating = false; this.invalidateHealth(); this.refreshHealth(); }
         await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.providerJobId = submission.providerJobId; current.status = 'generating'; current.message = 'AI 正在生成合影'; await this.store.save(); order = structuredClone(current); });
       }
       if (order.status !== 'generating') continue;
