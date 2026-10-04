@@ -1,0 +1,262 @@
+import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import path from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
+import { getAddress, verifyMessage, hexlify, toUtf8Bytes } from 'ethers';
+import { ApiError, requireValue } from './errors.mjs';
+import { OrderStore, atomicWrite } from './store.mjs';
+import { normalizePhoto, saveResult } from './images.mjs';
+import { CHAIN_ID, PRICE_WEI, RECIPIENT, TX_PATTERN, chainPreflight, verifyPayment } from './payment.mjs';
+
+const digest = value => createHash('sha256').update(value).digest('hex');
+const unpaid = order => ['awaiting_authorization', 'awaiting_payment'].includes(order.status);
+const IN_PROGRESS = ['queued', 'submitting', 'generating'];
+
+export class PaidService {
+  constructor(config, chain, provider) {
+    this.config = { enabled: false, orderTtlMs: 30 * 60_000, maxOpenOrders: 32, maxOrders: 10000, maxStoredPhotoBytes: 256 * 1024 * 1024, maxInProgress: 1, ...config };
+    this.chain = chain;
+    this.provider = provider;
+    this.store = new OrderStore(this.config.dataDir);
+    this.processing = false;
+  }
+  async open() { await this.store.open(); }
+  async close() { await this.activeProcessing; await this.store.close(); }
+  async ready(fresh = false) {
+    if (!fresh && this.healthCache && Date.now() - this.healthCache.at < 10_000) return this.healthCache.value;
+    let value;
+    try {
+      requireValue(this.config.enabled, 503, 'PAID_DISABLED', 'AI 付费模式尚未开放');
+      const result = await this.provider?.preflight();
+      requireValue(result?.ready, 503, 'PROVIDER_UNAVAILABLE', result?.reason || 'AI 生成服务尚未就绪');
+      await chainPreflight(this.chain);
+      value = { ready: true };
+    } catch (error) { value = { ready: false, reason: error instanceof ApiError ? error.message : '生成或链上服务暂不可用' }; }
+    value = { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: '0.0014', priceWei: PRICE_WEI, provider: 'libtv' };
+    this.healthCache = { at: Date.now(), value };
+    return value;
+  }
+  async requireReady() { const health = await this.ready(true); requireValue(health.ready, 503, 'SERVICE_UNAVAILABLE', health.reason); }
+  authenticate(id, token) {
+    const order = this.store.state.orders[id];
+    const incoming = Buffer.from(digest(typeof token === 'string' ? token : ''));
+    const expected = Buffer.from(order?.tokenHash || '0'.repeat(64));
+    requireValue(order && incoming.length === expected.length && timingSafeEqual(incoming, expected), 404, 'ORDER_NOT_FOUND', '订单不存在或凭证无效');
+    return order;
+  }
+  view(order) {
+    return {
+      id: order.id, status: order.status, character: order.character, scene: order.scene, options: order.options,
+      createdAt: order.createdAt, expiresAt: order.expiresAt, payerAddress: order.payerAddress,
+      signatureMessage: order.status === 'awaiting_authorization' ? order.signatureMessage : undefined,
+      payment: order.authorizedAt ? order.payment : undefined,
+      paymentStatus: order.paymentStatus || 'unpaid', txHash: order.txHash || order.pendingTxHash,
+      resultUrl: order.status === 'completed' ? `/api/orders/${order.id}/result` : undefined,
+      message: order.message, recoverable: order.status === 'generating' || (order.status === 'review_required' && !!this.provider?.recover),
+    };
+  }
+  async cleanExpired() {
+    let changed = false;
+    for (const order of Object.values(this.store.state.orders)) {
+      // Submitted payment evidence is retained even if the client closes the tab.
+      const deadline = order.authorizedAt ? order.expiresAt + 24 * 60 * 60_000 : order.createdAt + 3 * 60_000;
+      if (unpaid(order) && order.pendingTxHash && Date.now() > order.expiresAt + 24 * 60 * 60_000) {
+        order.status = 'review_required'; order.message = '付款状态长时间未确认，交易哈希已保留，请联系运营方核对'; changed = true;
+      }
+      if (unpaid(order) && !order.pendingTxHash && Date.now() > deadline) {
+        await this.store.removeFiles(order.id);
+        delete this.store.state.orders[order.id]; changed = true;
+      }
+    }
+    if (changed) await this.store.save();
+  }
+  async create(body) {
+    await this.requireReady();
+    return this.store.exclusive(async () => {
+      await this.cleanExpired();
+      const all = Object.values(this.store.state.orders);
+      requireValue(all.length < this.config.maxOrders, 503, 'CAPACITY_FULL', '服务容量暂满，请稍后再试');
+      requireValue(all.filter(o => unpaid(o)).length < this.config.maxOpenOrders && all.filter(o => IN_PROGRESS.includes(o.status)).length < this.config.maxInProgress, 503, 'BUSY', '生成服务繁忙，请稍后再试');
+      let payerAddress;
+      try { payerAddress = getAddress(body.payerAddress); } catch { throw new ApiError(400, 'INVALID_WALLET', '钱包地址格式不正确'); }
+      requireValue(!all.some(o => o.payerAddress.toLowerCase() === payerAddress.toLowerCase() && (IN_PROGRESS.includes(o.status) || (unpaid(o) && Date.now() < o.expiresAt))), 409, 'ACTIVE_ORDER', '此钱包已有未完成订单，请继续原订单');
+      requireValue(['cz', 'heyi'].includes(body.character) && ['terrace', 'cafe', 'street'].includes(body.scene), 400, 'INVALID_SELECTION', '请选择有效的伙伴与场景');
+      const options = { gender: body.options?.gender || 'male', body: body.options?.body || 'standard', outfit: body.options?.outfit || 'black' };
+      requireValue(['male', 'female'].includes(options.gender) && ['slim', 'standard', 'full'].includes(options.body) && ['black', 'cream', 'red'].includes(options.outfit), 400, 'INVALID_OPTIONS', '服装或身材选项不正确');
+      const normalized = await normalizePhoto(body.photoDataUrl);
+      requireValue(all.reduce((sum, o) => sum + (o.photoBytes || 0), 0) + normalized.length <= this.config.maxStoredPhotoBytes, 503, 'PHOTO_STORAGE_FULL', '照片存储容量暂满，请稍后再试');
+      const { latest } = await chainPreflight(this.chain);
+      const id = randomUUID();
+      const token = randomBytes(32).toString('base64url');
+      const createdAt = Date.now();
+      const order = {
+        id, tokenHash: digest(token), payerAddress, createdAt, expiresAt: createdAt + this.config.orderTtlMs,
+        status: 'awaiting_authorization', paymentStatus: 'unpaid', character: body.character, scene: body.scene, options,
+        photoHash: digest(normalized), photoBytes: normalized.length, nonce: randomBytes(24).toString('hex'), startBlock: latest.number,
+        payment: { chainId: CHAIN_ID, to: RECIPIENT, valueWei: PRICE_WEI, valueHex: `0x${BigInt(PRICE_WEI).toString(16)}`, data: hexlify(toUtf8Bytes(`cz-heyi-photo:${id}`)) },
+      };
+      order.signatureMessage = [
+        '偶遇照相馆 · AI 合影订单授权',
+        `Service: ${this.config.serviceDomain || 'cz-heyi-photo-game'}`,
+        `Order: ${id}`, `Wallet: ${payerAddress}`, `Chain: BNB Smart Chain (${CHAIN_ID})`,
+        `Recipient: ${RECIPIENT}`, 'Price: 0.0014 BNB (1400000000000000 wei)',
+        `Photo SHA-256: ${order.photoHash}`, `Selection: ${order.character}/${order.scene}/${JSON.stringify(options)}`,
+        `Nonce: ${order.nonce}`, `Expires: ${new Date(order.expiresAt).toISOString()}`,
+        '此签名仅绑定本订单，不是转账或代币授权。付款需您另行在钱包确认。',
+      ].join('\n');
+      await mkdir(this.store.orderDir(id), { recursive: true, mode: 0o700 });
+      try {
+        await atomicWrite(path.join(this.store.orderDir(id), 'input.jpg'), normalized);
+        this.store.state.orders[id] = order;
+        await this.store.save();
+      } catch (error) { delete this.store.state.orders[id]; await this.store.removeFiles(id); throw error; }
+      return { ...this.view(order), token };
+    });
+  }
+  async authorize(id, token, signature) {
+    return this.store.exclusive(async () => {
+      const order = this.authenticate(id, token);
+      if (!unpaid(order)) return this.view(order);
+      requireValue(Date.now() <= order.expiresAt, 410, 'ORDER_EXPIRED', '订单已过期，请勿向此订单付款');
+      let signer;
+      try { signer = verifyMessage(order.signatureMessage, signature); } catch { throw new ApiError(401, 'INVALID_SIGNATURE', '钱包签名无法验证'); }
+      requireValue(signer.toLowerCase() === order.payerAddress.toLowerCase(), 401, 'WRONG_SIGNER', '签名钱包与订单钱包不同');
+      requireValue(!Object.values(this.store.state.orders).some(other => other.id !== id && (IN_PROGRESS.includes(other.status) || (other.authorizedAt && unpaid(other) && Date.now() <= other.expiresAt))), 409, 'RESERVATION_BUSY', '已有订单正在等待付款或生成，请稍后再试');
+      await this.requireReady();
+      if (!order.authorizedAt) {
+        const { latest } = await chainPreflight(this.chain);
+        order.authorizedAt = Date.now(); order.startBlock = latest.number; order.status = 'awaiting_payment';
+        await this.store.save();
+      }
+      return this.view(order);
+    });
+  }
+  async claim(id, token, txHash) {
+    const response = await this.store.exclusive(async () => {
+      const order = this.authenticate(id, token);
+      requireValue(typeof txHash === 'string' && TX_PATTERN.test(txHash), 400, 'INVALID_TX', '交易哈希格式不正确');
+      const hash = txHash.toLowerCase();
+      if (!unpaid(order) && !(order.status === 'review_required' && order.pendingTxHash && !order.txHash)) {
+        requireValue(order.txHash === hash, 409, 'ALREADY_PAID', '本订单已绑定另一笔付款');
+        return this.view(order);
+      }
+      requireValue(order.authorizedAt, 409, 'NOT_AUTHORIZED', '请先完成钱包签名');
+      const consumed = this.store.state.consumedTransactions[hash];
+      requireValue(!consumed || consumed === id, 409, 'TX_ALREADY_USED', '该交易已用于其他订单');
+      const verified = await verifyPayment(this.chain, order, hash);
+      if (verified.pending) {
+        order.pendingTxHash = hash; order.paymentStatus = 'pending'; order.message = '正在等待链上最终确认';
+        await this.store.save();
+        return this.view(order);
+      }
+      // One atomic durable ledger write reserves this payment and its generation credit.
+      this.store.state.consumedTransactions[hash] = id;
+      order.txHash = hash; delete order.pendingTxHash; order.paymentStatus = 'verified';
+      order.paymentProof = verified; order.paidAt = Date.now();
+      order.status = verified.late ? 'review_required' : 'queued';
+      order.message = verified.late ? '付款发生在订单过期后，付款凭证已保留，请联系运营方处理' : '付款已确认，等待 AI 生成';
+      await this.store.save();
+      return this.view(order);
+    });
+    this.kick(); return response;
+  }
+  async get(id, token) { return this.store.exclusive(() => this.view(this.authenticate(id, token))); }
+  async result(id, token) {
+    const filename = await this.store.exclusive(() => {
+      const order = this.authenticate(id, token);
+      requireValue(order.status === 'completed', 409, 'RESULT_NOT_READY', '合影尚未生成完成');
+      return path.join(this.store.orderDir(id), 'result.jpg');
+    });
+    return readFile(filename);
+  }
+  job(order) {
+    return { id: order.id, idempotencyKey: order.id, inputPath: path.join(this.store.orderDir(order.id), 'input.jpg'), outputDir: this.store.orderDir(order.id), character: order.character, scene: order.scene, options: order.options };
+  }
+  kick() { if (this.autoProcess) void this.processQueue().catch(() => {}); }
+  async retry(id, token) {
+    const value = await this.store.exclusive(async () => {
+      const order = this.authenticate(id, token);
+      requireValue(['generating', 'review_required'].includes(order.status) && !order.paymentProof?.late, 409, 'RETRY_UNAVAILABLE', '订单需由运营方处理，重试不会重新扣取额度');
+      if (order.status === 'review_required') {
+        requireValue(this.provider?.recover && order.submissionStartedAt && !order.providerJobId, 409, 'RETRY_UNAVAILABLE', '生成状态需人工核对');
+        const recovered = await this.provider.recover(this.job(order));
+        requireValue(recovered?.providerJobId, 409, 'RETRY_UNAVAILABLE', '未找到已提交任务，请联系运营方核对');
+        order.providerJobId = recovered.providerJobId; order.status = 'generating'; order.message = '已恢复同一生成任务'; await this.store.save();
+      }
+      return this.view(order);
+    });
+    this.kick(); return value;
+  }
+  processQueue() {
+    if (this.processing) return this.activeProcessing;
+    this.processing = true;
+    this.activeProcessing = this.runQueue().finally(() => { this.processing = false; });
+    return this.activeProcessing;
+  }
+  async runQueue() {
+    // Finish chain verification after a player's tab closes. Never rely on browser polling.
+    const waiting = await this.store.exclusive(async () => {
+      await this.cleanExpired();
+      return Object.values(this.store.state.orders).filter(o => o.status === 'awaiting_payment' && o.pendingTxHash).map(o => ({ id: o.id, hash: o.pendingTxHash, tokenHash: o.tokenHash }));
+    });
+    for (const pending of waiting) {
+      await this.store.exclusive(async () => {
+        const order = this.store.state.orders[pending.id];
+        let verified;
+        try { verified = await verifyPayment(this.chain, order, pending.hash); } catch { return; }
+        if (verified.pending) return;
+        const consumed = this.store.state.consumedTransactions[pending.hash];
+        if (consumed && consumed !== order.id) { order.status = 'review_required'; order.message = '付款凭证已绑定其他订单，需人工核对'; }
+        else {
+          this.store.state.consumedTransactions[pending.hash] = order.id;
+          order.txHash = pending.hash; delete order.pendingTxHash; order.paymentStatus = 'verified';
+          order.paymentProof = verified; order.paidAt = Date.now(); order.status = verified.late ? 'review_required' : 'queued';
+          order.message = verified.late ? '付款发生在订单过期后，付款凭证已保留，请联系运营方处理' : '付款已确认，等待 AI 生成';
+        }
+        await this.store.save();
+      });
+    }
+    // Serial generation avoids racing one account's quota; pending jobs are polled on later ticks.
+    const ids = await this.store.exclusive(() => Object.values(this.store.state.orders).filter(o => IN_PROGRESS.includes(o.status)).map(o => o.id));
+    for (const id of ids) {
+      let order = await this.store.exclusive(() => structuredClone(this.store.state.orders[id]));
+      const job = this.job(order);
+      if (order.status === 'submitting') {
+        let recovered;
+        try { recovered = await this.provider?.recover?.(job); } catch {}
+        await this.store.exclusive(async () => {
+          const current = this.store.state.orders[id];
+          if (recovered?.providerJobId) { current.providerJobId = recovered.providerJobId; current.status = 'generating'; }
+          else { current.status = 'review_required'; current.message = '提交时服务中断，已保留付款，需核对生成任务；不会自动重复扣额度'; }
+          await this.store.save(); order = structuredClone(current);
+        });
+      }
+      if (order.status === 'queued') {
+        try { await this.requireReady(); } catch { continue; }
+        // This intent is committed BEFORE entering the credit-consuming provider operation.
+        await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'submitting'; current.submissionStartedAt = Date.now(); current.message = 'AI 正在提交生成任务'; await this.store.save(); });
+        let submission;
+        try { submission = await this.provider.submit(job); requireValue(typeof submission?.providerJobId === 'string' && submission.providerJobId.length > 0, 500, 'NO_PROVIDER_JOB', '生成任务信息缺失'); }
+        catch {
+          await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'review_required'; current.message = '生成提交状态需核对，付款已保留；不会自动重复扣额度'; await this.store.save(); });
+          continue;
+        }
+        await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.providerJobId = submission.providerJobId; current.status = 'generating'; current.message = 'AI 正在生成合影'; await this.store.save(); order = structuredClone(current); });
+      }
+      if (order.status !== 'generating') continue;
+      try {
+        const progress = await this.provider.poll(order.providerJobId, job);
+        if (progress?.status === 'pending') continue;
+        if (progress?.status === 'failed') {
+          await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'failed'; current.message = 'AI 生成失败，付款凭证已保留，请联系运营方处理'; await this.store.save(); });
+          continue;
+        }
+        requireValue(progress?.status === 'succeeded' && path.isAbsolute(progress.resultPath || ''), 500, 'INVALID_PROVIDER_RESULT', '生成结果不正确');
+        await saveResult(progress.resultPath, path.join(job.outputDir, 'result.jpg'));
+        await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'completed'; current.completedAt = Date.now(); current.message = 'AI 合影已完成'; await this.store.save(); });
+      } catch {
+        // Poll/download failures may be retried because they never purchase another generation.
+        await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.message = '生成任务已提交，正在恢复状态；无需再次付款'; current.lastPollFailureAt = Date.now(); await this.store.save(); });
+      }
+    }
+  }
+}

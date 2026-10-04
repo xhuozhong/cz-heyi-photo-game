@@ -7,3 +7,9 @@ Thumbs.db
 work/
 results/
 public/results/
+.libtv/
+paid-data/
+private-data/
+backend/runtime/
+deploy/private/
+!.env.example

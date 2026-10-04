@@ -4,7 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node static-server.mjs"
+    "start": "node static-server.mjs",
+    "start:paid": "node backend/server.mjs",
+    "test:paid": "node --test"
+  },
+  "dependencies": {
+    "ethers": "6.17.0",
+    "sharp": "0.34.5"
   },
   "engines": {
     "node": ">=20"

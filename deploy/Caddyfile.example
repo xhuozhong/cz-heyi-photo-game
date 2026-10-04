@@ -1,0 +1,7 @@
+# Replace this example domain with the paid site's actual domain.
+paid.example.com {
+    reverse_proxy 127.0.0.1:4176
+    request_body {
+        max_size 18MB
+    }
+}

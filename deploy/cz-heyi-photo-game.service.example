@@ -1,0 +1,17 @@
+[Unit]
+Description=CZ and He Yi photo game
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=photogame
+WorkingDirectory=/opt/cz-heyi-photo-game
+ExecStart=/usr/bin/node --env-file=.env backend/server.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
 import { prepareAvatar, createComposition, encodePhoto, AvatarError } from './template-compositor.js';
+import { createPaidMode } from './paid-mode.js';
 const $ = id => document.getElementById(id);
 const sceneInfo = {
   terrace: { name: '天台晚霞', kicker: 'SCENE 01 / ROOFTOP AT SUNSET', caption: '晚霞，和一次恰好的相遇。' },
@@ -9,6 +10,7 @@ const names = { cz: 'CZ', heyi: '何一' };
 const state = { character: 'cz', scene: 'terrace', subject: 'auto', gender: 'male', body: 'standard', outfit: 'black', photo: null, photoLoading: false, busy: false, adjusting: false, ready: true, result: null, album: [], sound: false, manual: null, composition: null };
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 let toastTimer, elapsedTimer, dbPromise, photoReadToken = 0, adjustToken = 0, adjustTimer, cropImage;
+let paid;
 function feedback(message, info = false) { $('feedback').textContent = message; $('feedback').classList.toggle('info', info); $('feedback').hidden = !message; }
 function toast(message) { clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false; toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3600); }
 function refreshControls() {
@@ -18,13 +20,14 @@ function refreshControls() {
   document.body.classList.toggle('busy', state.busy);
   document.body.classList.toggle('has-result', !!state.result && !state.busy);
   $('resultActions').hidden = !state.result || state.busy;
-  $('adjustments').hidden = !state.result || state.busy;
+  $('adjustments').hidden = !state.result || state.busy || state.result.photoMethod === 'ai';
   $('downloadButton').disabled = state.busy || state.adjusting;
   $('saveButton').disabled = state.busy || state.adjusting || state.album.some(photo => photo.id === state.result?.id);
-  $('manualCropOpen').hidden = !state.photo || state.busy;
-  $('subjectField').hidden = !state.photo;
+  $('manualCropOpen').hidden = !state.photo || state.busy || paid?.mode === 'paid';
+  $('subjectField').hidden = !state.photo || paid?.mode === 'paid';
   $('stageHeading').textContent = state.result ? `你和 ${names[state.result.character]} 的合影` : '偶遇取景框';
   $('captionKicker').textContent = sceneInfo[state.scene].kicker; $('captionTitle').textContent = sceneInfo[state.scene].caption;
+  paid?.refresh();
 }
 function syncSelection() {
   for (const key of ['character', 'scene']) document.querySelectorAll(`[data-${key}]`).forEach(card => { const selected = card.dataset[key] === state[key]; card.classList.toggle('selected', selected); card.setAttribute('aria-pressed', String(selected)); });
@@ -46,7 +49,7 @@ function setStage(url, alt, badge, upload = false) {
   $('imageBadge').textContent = badge;
 }
 function showCurrentInput() {
-  if (state.result) setStage(state.result.url, `你和 ${names[state.result.character]} 的模板合成合影`, state.result.manual ? '你的合影 · 手动圈选' : '你的合影 · 本地模板合成');
+  if (state.result) setStage(state.result.url, `你和 ${names[state.result.character]} 的${state.result.photoMethod === 'ai' ? 'AI' : '模板'}合成合影`, state.result.photoMethod === 'ai' ? '你的合影 · AI 生成' : state.result.manual ? '你的合影 · 手动圈选' : '你的合影 · 本地模板合成');
   else if (state.photo) setStage(state.photo.dataURL, '你上传的原头像，尚未合成', '你的头像 · 准备拍摄', true);
   else setStage(null, '', '人物参考 · 准备拍摄');
 }
@@ -100,7 +103,7 @@ function endLoading() { clearInterval(elapsedTimer); $('loadingOverlay').hidden 
 function adjustments() { return { scale: Number($('headScale').value) / 100, x: Number($('headX').value), y: Number($('headY').value), lighting: Number($('headLighting').value) }; }
 function resetSliders() { $('headScale').value = 100; $('headX').value = 0; $('headY').value = 0; $('headLighting').value = -2; }
 async function shoot() {
-  if (state.busy || state.photoLoading || !state.photo) return;
+  if (state.busy || state.photoLoading || !state.photo || paid?.mode === 'paid') return;
   feedback(''); clearResult(); state.busy = true; refreshControls();
   const options = Object.fromEntries(['character', 'scene', 'gender', 'body', 'outfit'].map(k => [k, state[k]]));
   try {
@@ -235,7 +238,20 @@ $('resetAdjustments').addEventListener('click', () => { resetSliders(); updateAd
 $('manualCropOpen').addEventListener('click', openCrop); $('cropClose').addEventListener('click', () => $('cropDialog').close());
 for (const id of ['cropX', 'cropY', 'cropSize']) $(id).addEventListener('input', drawCrop);
 $('cropConfirm').addEventListener('click', () => { state.manual = cropBox(); clearResult(); $('cropDialog').close(); showCurrentInput(); refreshControls(); feedback('头像已圈选。点击拍摄使用手动柔边合成。', true); $('shootButton').focus(); });
-window.render_game_to_text = () => JSON.stringify({ mode: state.busy ? 'composing' : state.result ? 'result' : state.photo ? 'ready' : 'setup', character: state.character, scene: state.scene, gender: state.gender, body: state.body, outfit: state.outfit, photoLoaded: !!state.photo, photoMethod: state.result?.photoMethod || null, manualCrop: !!state.manual, resultId: state.result?.id || null, albumCount: state.album.length, unlockedScenes: [...new Set(state.album.map(photo => photo.scene))] });
+paid = createPaidMode({
+  getInput: () => state,
+  onModeChange() { clearResult(); feedback(''); showCurrentInput(); refreshControls(); },
+  onBusy(busy) { state.busy = busy; if (busy) beginLoading(); else endLoading(); refreshControls(); },
+  onStatus: status,
+  onResult(result) {
+    clearResult();
+    state.character = result.character; state.scene = result.scene;
+    for (const key of ['gender', 'body', 'outfit']) if (result[key]) state[key] = result[key];
+    state.result = { id: `ai-${result.orderId}`, ...result, url: URL.createObjectURL(result.blob), createdAt: Date.now() };
+    syncSelection(); showCurrentInput(); feedback('AI 合影已完成。可下载或收藏；每笔订单对应一次生成。', true); toast('你的 AI 合影已完成。');
+  },
+});
+window.render_game_to_text = () => JSON.stringify({ mode: state.busy ? 'composing' : state.result ? 'result' : state.photo ? 'ready' : 'setup', character: state.character, scene: state.scene, gender: state.gender, body: state.body, outfit: state.outfit, photoLoaded: !!state.photo, photoMethod: state.result?.photoMethod || null, manualCrop: !!state.manual, resultId: state.result?.id || null, albumCount: state.album.length, unlockedScenes: [...new Set(state.album.map(photo => photo.scene))], paid: paid.snapshot() });
 syncSelection(); refreshControls(); loadAlbum();
 
 // Feature-detected page tools use the same choices as the visible controls.
