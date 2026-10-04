@@ -169,7 +169,7 @@ export async function createComposition(avatar, options, status = () => {}) {
     // Each render starts from the clean base, so micro-adjustments never stack signatures.
     drawTemplateSignature(out, signature, options.character, stage.width, stage.height);
     // The mark is baked into the image, including downloads and browser albums.
-    const label = '合成合影 · 偶遇照相馆'; out.font = '500 17px "Microsoft YaHei", sans-serif';
+    const label = '合成合影 · 币安照相馆'; out.font = '500 17px "Microsoft YaHei", sans-serif';
     const w = out.measureText(label).width + 26; out.fillStyle = '#152015b8'; out.fillRect(998 - w, 709, w, 34); out.fillStyle = '#fff'; out.textBaseline = 'middle'; out.fillText(label, 1011 - w, 727);
     return stage;
   };

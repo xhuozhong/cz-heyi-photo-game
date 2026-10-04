@@ -116,7 +116,7 @@ export class LibtvProvider {
     const unavailable = reason => ({ ready: false, reason, provider: 'libtv' });
     if (!this.enabled) return unavailable('AI 合影暂未开放');
     if (!Number.isSafeInteger(this.generationBudget) || this.generationBudget < 1) {
-      return unavailable('请管理员核对 LibTV 额度并设置可用生图次数预算');
+      return unavailable('AI 服务暂未开放，请稍后再试');
     }
     try {
       await mkdir(this.dataDir, { recursive: true });
@@ -128,20 +128,20 @@ export class LibtvProvider {
       await access(path.join(this.rootDir, 'public', 'assets', 'heyi-reference.jpg'));
       const account = await this.run(['account', 'info']);
       if (!account?.user?.id || !account?.activeAccount?.isActive || account?.activeAccount?.memberAccount?.effective !== true) {
-        return unavailable('LibTV 登录或会员状态需要管理员检查');
+        return unavailable('AI 服务暂时不可用，请稍后再试');
       }
       if (this.accountId && String(account.activeAccount.accountId) !== String(this.accountId)) {
-        return unavailable('LibTV 当前账户与已绑定账户不一致');
+        return unavailable('AI 服务配置需要检查，请稍后再试');
       }
       const model = await this.run(['model', this.model]);
       const properties = model?.schema?.properties;
       const ratios = properties?.ratio?.enum?.map(v => typeof v === 'string' ? v : v.value) || [];
       if (model?.modality !== 'image' || !properties?.modeType?.items?.image2image || !ratios.includes('4:3') || !properties?.quality?.enum?.includes('2K')) {
-        return unavailable('LibTV 模型配置需要管理员检查');
+        return unavailable('AI 生成模型暂时不可用，请稍后再试');
       }
       const project = await this.project();
       const canvas = await this.run(['node', 'list', '-p', project]);
-      if (canvas?.projectUuid !== project) return unavailable('LibTV 画布不可用');
+      if (canvas?.projectUuid !== project) return unavailable('AI 生成服务暂时不可用，请稍后再试');
       // CLI 1.1.3 has no live balance endpoint. This is an explicitly configured
       // administrator budget, not a claim that membership proves credit balance.
       return { ready: true, provider: 'libtv', remainingGenerations, quotaMode: 'administrator-budget' };
@@ -192,7 +192,7 @@ export class LibtvProvider {
       const terminal = await this.run(['node', state.nodeKey, '-p', project, '--run']);
       if (isFailed(terminal)) {
         state.status = 'failed';
-        state.reason = 'LibTV 未生成完成，订单已保留等待处理';
+        state.reason = 'AI 未生成完成，订单已保留等待处理';
       } else {
         state.status = 'succeeded';
         state.resultPath = await this.download(state.nodeKey, job);

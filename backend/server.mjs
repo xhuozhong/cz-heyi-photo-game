@@ -133,8 +133,9 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
         const compressed = compressible && acceptsGzip(req.headers['accept-encoding']);
         let content = compressed ? await compressedStatic(actual, info)
           : req.method === 'HEAD' && pathname !== '/paid-config.js' ? undefined : await readFile(actual);
-        // The backend deployment enables its own same-origin API without changing the Pages free edition.
-        if (content && pathname === '/paid-config.js') content = Buffer.from(content.toString('utf8').replace("apiBase: ''", "apiBase: '/'"));
+        // Pages uses the configured HTTPS API. A page served by this backend
+        // uses its own API, including local development and the backup entry.
+        if (content && pathname === '/paid-config.js') content = Buffer.from(content.toString('utf8').replace(/apiBase:\s*'(?:|https:\/\/xhuozhong\.com)'/, "apiBase: '/'"));
         res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
         if (cacheable) res.setHeader('Cache-Control', 'public, max-age=3600, no-transform');
         if (compressible) res.setHeader('Vary', 'Accept-Encoding');

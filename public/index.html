@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#151715">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://xhuozhong.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'">
   <meta name="description" content="上传头像，选择 CZ 或何一、身体版型和服装，在浏览器里制作你的纪念合影。">
-  <title>偶遇照相馆 · CZ & 何一</title>
+  <title>币安照相馆 · CZ & 何一</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?ver=ai-price-001-20261004">
+  <link rel="stylesheet" href="styles.css?ver=github-primary-20261004">
 </head>
 <body>
   <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -24,11 +25,11 @@
     <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
   </defs></svg>
   <header class="topbar">
-    <a class="brand" href="./" aria-label="偶遇照相馆首页"><span class="brand-mark"><svg><use href="#camera"/></svg></span><span>偶遇照相馆<span class="brand-en">ENCOUNTER STUDIO</span></span></a>
+    <a class="brand" href="./" aria-label="币安照相馆首页"><span class="brand-mark"><svg><use href="#camera"/></svg></span><span>币安照相馆<span class="brand-en">BINANCE PHOTO STUDIO</span></span></a>
     <div class="header-right"><span class="edition">CZ & HE YI EDITION</span><button id="albumOpen" class="album-toggle"><svg><use href="#heart"/></svg> 我的合影 <span id="albumCount">0</span></button></div>
   </header>
   <main>
-    <div class="intro"><div><p class="eyebrow"><span></span> A LITTLE ENCOUNTER, A BIG MEMORY</p><h1>你的下一张合影，<em>有点特别。</em></h1></div><p class="intro-note">选一位伙伴，带上你的照片。<br>剩下的，交给这一刻。</p></div>
+    <div class="intro"><div><p class="eyebrow"><span></span> YOUR PHOTO, YOUR MOMENT</p><h1>你的下一张合影，<em>有点特别。</em></h1></div><p class="intro-note">选一位伙伴，带上你的照片。<br>剩下的，交给这一刻。</p></div>
     <div class="studio-layout">
       <section class="controls" aria-label="合影设置">
         <div class="mode-switch" role="group" aria-label="合影制作方式">
@@ -52,7 +53,7 @@
           <label for="bodySelect">身材版型<select id="bodySelect"><option value="slim">偏瘦</option><option value="standard" selected>标准</option><option value="full">丰满</option></select></label>
           <label class="outfit-field" for="outfitSelect">服装<select id="outfitSelect"><option value="black">黑色 T 恤</option><option value="cream">米白 T 恤</option><option value="red">酒红 T 恤</option></select></label>
         </div>
-        <div class="section-heading second"><span class="step">04</span><h2>选一个偶遇地点</h2></div>
+        <div class="section-heading second"><span class="step">04</span><h2>选一个合影地点</h2></div>
         <div class="scene-grid" role="group" aria-label="合影场景">
           <button class="scene-card selected" data-scene="terrace" aria-pressed="true"><svg><use href="#sun"/></svg><span>天台晚霞</span><span class="scene-earned" aria-label="已收藏">✦</span></button>
           <button class="scene-card" data-scene="cafe" aria-pressed="false"><svg><use href="#cup"/></svg><span>咖啡偶遇</span><span class="scene-earned" aria-label="已收藏">✦</span></button>
@@ -60,14 +61,14 @@
         </div>
         <button id="shootButton" class="shoot-button" disabled><svg><use href="#camera"/></svg><span>上传照片，准备合影</span></button>
         <div id="paidPanel" class="paid-panel" hidden>
-          <div class="paid-title"><svg><use href="#spark"/></svg><h3>让 AI 留下这次偶遇</h3></div>
+          <div class="paid-title"><svg><use href="#spark"/></svg><h3>让 AI 留下这次合影</h3></div>
           <p class="paid-description">每个钱包首次 AI 合影免费，之后每次 0.001 BNB。用你的照片与所选伙伴生成一张新的合影。服装和身材选项供 AI 参考，实际结果可能保留原照片的穿着。</p>
           <dl class="payment-details"><div><dt>本次费用</dt><dd><strong id="paidPrice">首次免费</strong><span id="paidFeeNote">之后 0.001 BNB / 次，付费时钱包另计网络手续费</span></dd></div><div><dt>钱包网络</dt><dd>BNB Smart Chain 主网</dd></div><div class="recipient-row"><dt>收款地址</dt><dd><code id="paidRecipient">0x7C4383da12264BeD66D125EF34d4a4A8Bb8979F2</code></dd></div></dl>
           <p id="paidAvailability" class="paid-availability" role="status" aria-live="polite">AI 合影尚未开放。你可以继续免费拍摄。</p>
           <button id="paidHealthRetry" class="text-button" hidden>重新检查服务</button>
           <p id="paidTrialStatus" class="paid-wallet" role="status" aria-live="polite">连接钱包后，核验首次免费资格。</p>
           <button id="paidTrialRetry" class="text-button" hidden>重新核验首次免费资格</button>
-          <label class="paid-consent"><input id="paidConsent" type="checkbox"><span>我同意将所上传的照片发送至合影服务和 LibTV，用于本次 AI 合影。</span></label>
+          <label class="paid-consent"><input id="paidConsent" type="checkbox"><span>我同意将所上传的照片发送至合影服务方和第三方 AI 服务，用于本次 AI 合影。</span></label>
           <p id="paidWalletExplanation" class="wallet-explanation">首次免费只需钱包签名确认订单，不会请求转账。后续付费合影会在签名后请求支付 0.001 BNB。</p>
           <button id="paidConnect" class="wallet-button" disabled>连接钱包</button>
           <p id="paidWallet" class="paid-wallet" hidden></p>
@@ -79,14 +80,14 @@
         <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
       </section>
       <section class="workspace" aria-label="合影预览">
-        <div class="stage-top"><div class="view-label"><span class="live-dot"></span><span id="stageHeading">偶遇取景框</span></div><button id="soundButton" class="sound-button" aria-pressed="false" aria-label="打开快门声音"><svg><use href="#volume"/></svg><span>声音关</span></button></div>
+        <div class="stage-top"><div class="view-label"><span class="live-dot"></span><span id="stageHeading">合影取景框</span></div><button id="soundButton" class="sound-button" aria-pressed="false" aria-label="打开快门声音"><svg><use href="#volume"/></svg><span>声音关</span></button></div>
         <div id="photoStage" class="photo-stage">
           <img id="stageImage" alt="" hidden>
-          <div id="emptyStage" class="empty-stage"><div class="empty-portrait portrait cz-portrait"><img src="assets/cz-reference.jpg" alt="CZ 正脸参考"></div><div class="empty-copy"><p>YOUR NEXT ENCOUNTER</p><h3>把你，放进这一刻。</h3><span>上传一张照片，和 CZ 留下纪念。</span></div></div>
+          <div id="emptyStage" class="empty-stage"><div class="empty-portrait portrait cz-portrait"><img src="assets/cz-reference.jpg" alt="CZ 正脸参考"></div><div class="empty-copy"><p>YOUR NEXT PHOTO</p><h3>把你，放进这一刻。</h3><span>上传一张照片，和 CZ 留下纪念。</span></div></div>
           <div class="stage-shade"></div><div class="frame-corner top-left"></div><div class="frame-corner top-right"></div><div class="frame-corner bottom-left"></div><div class="frame-corner bottom-right"></div>
           <span id="imageBadge" class="image-badge">人物参考 · 准备拍摄</span><span class="image-mark">创意合成合影</span>
           <div id="countdown" class="countdown" aria-live="assertive" hidden></div>
-          <div id="loadingOverlay" class="loading-overlay" hidden><div class="loader"><svg><use href="#camera"/></svg></div><strong id="loadingTitle" role="status" aria-live="polite">正在准备偶遇</strong><p id="loadingDescription">这张合影值得等一小会儿。</p><span id="elapsedTime">已等待 0 秒</span></div>
+          <div id="loadingOverlay" class="loading-overlay" hidden><div class="loader"><svg><use href="#camera"/></svg></div><strong id="loadingTitle" role="status" aria-live="polite">正在准备合影</strong><p id="loadingDescription">这张合影值得等一小会儿。</p><span id="elapsedTime">已等待 0 秒</span></div>
           <div id="flash" class="flash"></div>
         </div>
         <div class="photo-caption"><div><p class="caption-kicker" id="captionKicker">SCENE 01 / ROOFTOP AT SUNSET</p><h3 id="captionTitle">晚霞，和一次恰好的相遇。</h3></div><span class="photo-format">4:3<br><span>PHOTO</span></span></div>
@@ -98,16 +99,16 @@
           <label for="headLighting">头像明暗<input id="headLighting" type="range" min="-20" max="20" value="-2"></label>
         </div><button id="resetAdjustments" class="text-button">恢复自动搭配</button></details>
         <button id="manualCropOpen" class="text-button manual-entry" hidden>手动圈选头像</button>
-        <div class="collection"><div class="collection-title"><span>偶遇纪念册</span><span id="collectionProgress">0 / 3 个地点</span></div><div class="stamp-row"><span class="stamp" data-stamp="terrace"><svg><use href="#sun"/></svg> 天台晚霞</span><span class="stamp" data-stamp="cafe"><svg><use href="#cup"/></svg> 咖啡偶遇</span><span class="stamp" data-stamp="street"><svg><use href="#city"/></svg> 城市漫步</span></div><p id="collectionNote">收藏一张合影，点亮一个偶遇地点。</p></div>
+        <div class="collection"><div class="collection-title"><span>合影纪念册</span><span id="collectionProgress">0 / 3 个地点</span></div><div class="stamp-row"><span class="stamp" data-stamp="terrace"><svg><use href="#sun"/></svg> 天台晚霞</span><span class="stamp" data-stamp="cafe"><svg><use href="#cup"/></svg> 咖啡偶遇</span><span class="stamp" data-stamp="street"><svg><use href="#city"/></svg> 城市漫步</span></div><p id="collectionNote">收藏一张合影，点亮一个合影地点。</p></div>
       </section>
     </div>
-    <footer><span>合影自动附上对应人物的纪念签名。</span><span>合成图片与签名仅供创作娱乐，不代表真实见面或本人现场签署。</span></footer>
+    <footer><span>合影自动附上对应人物的纪念签名。</span><span>合成图片与签名仅供创作娱乐，不代表真实见面或本人现场签署。</span><span>仅供娱乐，如有侵权，请及时联系</span></footer>
   </main>
-  <dialog id="albumDialog" aria-labelledby="albumTitle"><div class="dialog-heading"><div><p class="eyebrow">YOUR ENCOUNTERS</p><h2 id="albumTitle">我的合影</h2></div><button id="albumClose" class="icon-button" aria-label="关闭相册"><svg><use href="#close"/></svg></button></div><p class="album-description">合影保存在当前浏览器。喜欢的照片，记得下载带走。</p><div id="albumGrid" class="album-grid"></div></dialog>
+  <dialog id="albumDialog" aria-labelledby="albumTitle"><div class="dialog-heading"><div><p class="eyebrow">YOUR PHOTOS</p><h2 id="albumTitle">我的合影</h2></div><button id="albumClose" class="icon-button" aria-label="关闭相册"><svg><use href="#close"/></svg></button></div><p class="album-description">合影保存在当前浏览器。喜欢的照片，记得下载带走。</p><div id="albumGrid" class="album-grid"></div></dialog>
   <dialog id="cropDialog" aria-labelledby="cropTitle"><div class="dialog-heading"><h2 id="cropTitle">圈选头像</h2><button id="cropClose" class="icon-button" aria-label="关闭头像圈选"><svg><use href="#close"/></svg></button></div><p class="crop-description">让绿色框包住脸部：从额头到下巴，左右贴近脸颊。手动模式使用柔边轮廓，复杂背景建议换一张照片。</p><canvas id="cropCanvas" width="640" height="480"></canvas><div class="adjust-grid">
     <label for="cropX">左右位置<input id="cropX" type="range" min="5" max="95" value="50"></label><label for="cropY">上下位置<input id="cropY" type="range" min="5" max="95" value="40"></label><label for="cropSize">脸部大小<input id="cropSize" type="range" min="8" max="80" value="30"></label>
   </div><button id="cropConfirm" class="download-button">使用圈选头像</button></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="app.js?ver=ai-price-001-20261004"></script>
+  <script type="module" src="app.js?ver=github-primary-20261004"></script>
 </body>
 </html>

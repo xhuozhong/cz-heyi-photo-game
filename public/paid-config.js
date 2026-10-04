@@ -1,7 +1,7 @@
-// Deployment owner configures an HTTPS backend here after it is ready.
-// Leave empty for the public free edition: the browser cannot collect payments.
+// GitHub Pages hosts the game; the owner's HTTPS API handles AI orders.
+// The frontend verifies live service readiness before allowing wallet actions.
 export const paidConfig = Object.freeze({
-  apiBase: '',
+  apiBase: 'https://xhuozhong.com',
   paidSiteUrl: '',
   chainId: 56,
   chainHex: '0x38',

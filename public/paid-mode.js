@@ -1,4 +1,4 @@
-import { paidConfig as config } from './paid-config.js?ver=ai-price-001-20261004';
+import { paidConfig as config } from './paid-config.js?ver=github-primary-20261004';
 import { stampPhotoBlob, SIGNATURE_VERSION } from './signature-stamp.js';
 
 const $ = id => document.getElementById(id);
@@ -22,13 +22,14 @@ const labels = {
 };
 
 function backendBase() {
-  // GitHub Pages hosts the free game only, even if a config was copied there.
-  if (location.hostname === 'github.io' || location.hostname.endsWith('.github.io')) return '';
   if (!config.apiBase) return '';
   try {
-    const url = new URL(config.apiBase, location.href);
-    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     const localPage = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+    // Local development must not contact production or enable real payments by
+    // inheriting the public Pages config; explicit local test configs still work.
+    const configured = localPage && config.apiBase === 'https://xhuozhong.com' ? '/' : config.apiBase;
+    const url = new URL(configured, location.href);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     if (url.username || url.password || url.search || url.hash || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback && localPage))) return '';
     if (loopback && !localPage) return '';
     return url.href.replace(/\/$/, '');
@@ -130,8 +131,8 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     $('modePaid').classList.toggle('selected', paid); $('modePaid').setAttribute('aria-pressed', String(paid));
     $('modeFree').disabled = state.busy || inputBusy; $('modePaid').disabled = state.busy || inputBusy;
     $('paidPanel').hidden = !paid; $('shootButton').hidden = paid;
-    $('serviceNote').innerHTML = paid ? 'AI 合影 · 每个钱包首次免费<br>之后 0.001 BNB / 次，使用服务方的 LibTV 额度。' : '本地模板合成 · 保留真实五官<br>头像不上传，不使用生图额度。';
-    $('paidAvailability').textContent = state.checking ? '正在确认 AI 合影是否可以使用…' : state.healthPending ? '正在核验 AI 服务，请稍后点击重新检查。核验完成前无法生成或付款。' : state.ready ? 'AI 合影已开放。每个钱包首次免费，之后每次 0.001 BNB。' : base ? 'AI 合影暂不可用，请稍后重试。当前无法生成或付款。' : 'AI 合影尚未开放。你可以继续免费拍摄。';
+    $('serviceNote').innerHTML = paid ? 'AI 合影 · 每个钱包首次免费<br>之后 0.001 BNB / 次，由第三方 AI 服务生成。' : '本地模板合成 · 保留真实五官<br>头像不上传，不使用生图额度。';
+    $('paidAvailability').textContent = state.checking ? '正在确认 AI 合影是否可以使用…' : state.healthPending ? '正在核验 AI 服务，请稍后点击重新检查。核验完成前无法生成或付款。' : state.ready ? 'AI 合影已开放。每个钱包首次免费，之后每次 0.001 BNB。' : base ? 'AI 服务暂未连接，免费模板仍可使用。当前无法生成或付款，请稍后重新检查。' : 'AI 合影尚未开放。你可以继续免费拍摄。';
     $('paidAvailability').classList.toggle('ready', state.ready);
     $('paidHealthRetry').hidden = !base || state.ready; $('paidHealthRetry').disabled = state.checking || state.busy;
     $('paidConsent').disabled = !state.ready || state.busy;
@@ -177,7 +178,7 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     if (Number(error?.code) === 4902) return '钱包尚未添加 BNB Smart Chain 主网，请在钱包中添加此网络后重试。';
     return error?.userMessage || (isTrial() ? '暂时无法继续。首次免费订单会保留，请稍后查看原订单。' : '暂时无法继续。订单会保留，请稍后重试；已付款请不要再次付款。');
   }
-  function userError(message) { const error = new Error(message); error.userMessage = message; return error; }
+  function userError(message) { const safeMessage = String(message).replace(/libtv/gi, 'AI 服务'); const error = new Error(safeMessage); error.userMessage = safeMessage; return error; }
   async function request(path, { method = 'GET', data, token, blob = false, freshPreflight = false } = {}) {
     if (!base) throw userError('AI 合影尚未开放，当前无法付款。');
     const controller = new AbortController();

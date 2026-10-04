@@ -1,5 +1,5 @@
-import { prepareAvatar, createComposition, encodePhoto, AvatarError } from './template-compositor.js?ver=generated-templates-20261004';
-import { createPaidMode } from './paid-mode.js?ver=ai-price-001-20261004';
+import { prepareAvatar, createComposition, encodePhoto, AvatarError } from './template-compositor.js?ver=github-primary-20261004';
+import { createPaidMode } from './paid-mode.js?ver=github-primary-20261004';
 import { SIGNATURE_VERSION } from './signature-stamp.js';
 const $ = id => document.getElementById(id);
 const sceneInfo = {
@@ -16,7 +16,7 @@ function feedback(message, info = false) { $('feedback').textContent = message; 
 function toast(message) { clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false; toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3600); }
 function refreshControls() {
   $('shootButton').disabled = state.busy || state.photoLoading || !state.photo;
-  $('shootButton').querySelector('span').textContent = state.busy ? '正在制作这次偶遇' : state.photoLoading ? '正在读取头像' : !state.photo ? '上传头像，准备合影' : `和 ${names[state.character]} 拍张合影`;
+  $('shootButton').querySelector('span').textContent = state.busy ? '正在制作这张合影' : state.photoLoading ? '正在读取头像' : !state.photo ? '上传头像，准备合影' : `和 ${names[state.character]} 拍张合影`;
   for (const button of document.querySelectorAll('[data-character], [data-scene], #uploadZone, #replacePhoto, #tryExample, #againButton, #photoInput, #subjectSelect, #genderSelect, #bodySelect, #outfitSelect')) button.disabled = state.busy;
   document.body.classList.toggle('busy', state.busy);
   document.body.classList.toggle('has-result', !!state.result && !state.busy);
@@ -26,7 +26,7 @@ function refreshControls() {
   $('saveButton').disabled = state.busy || state.adjusting || state.album.some(photo => photo.id === state.result?.id);
   $('manualCropOpen').hidden = !state.photo || state.busy || paid?.mode === 'paid';
   $('subjectField').hidden = !state.photo || paid?.mode === 'paid';
-  $('stageHeading').textContent = state.result ? `你和 ${names[state.result.character]} 的合影` : '偶遇取景框';
+  $('stageHeading').textContent = state.result ? `你和 ${names[state.result.character]} 的合影` : '合影取景框';
   $('captionKicker').textContent = sceneInfo[state.scene].kicker; $('captionTitle').textContent = sceneInfo[state.scene].caption;
   paid?.refresh();
 }
@@ -119,7 +119,7 @@ async function shoot() {
     state.composition = await createComposition(avatar, options, status); resetSliders();
     const blob = await encodePhoto(state.composition.canvas);
     state.result = { id: crypto.randomUUID(), blob, url: URL.createObjectURL(blob), ...options, photoMethod: 'template', signatureVersion: SIGNATURE_VERSION, manual: avatar.manual, createdAt: Date.now() };
-    feedback(avatar.manual ? '已用手动圈选合成。可以微调头像位置和明暗，使衔接更自然。' : '拍好了！可微调头像位置和明暗，再收藏或下载带走。', true); toast('咔嚓！这次偶遇已定格。');
+    feedback(avatar.manual ? '已用手动圈选合成。可以微调头像位置和明暗，使衔接更自然。' : '拍好了！可微调头像位置和明暗，再收藏或下载带走。', true); toast('咔嚓！这张合影已定格。');
   } catch (error) {
     feedback(error.message || '这次没拍成功，请重新试一张清晰的头像。');
     if (error instanceof AvatarError) $('manualCropOpen').hidden = false;
@@ -188,7 +188,7 @@ function updateCollection() {
   document.querySelectorAll('[data-stamp]').forEach((stamp) => stamp.classList.toggle('earned', earned.has(stamp.dataset.stamp)));
   document.querySelectorAll('[data-scene]').forEach((card) => card.classList.toggle('earned', earned.has(card.dataset.scene)));
   document.querySelector('.collection').classList.toggle('complete', earned.size === 3);
-  $('collectionNote').textContent = earned.size === 3 ? '✦ 今日合影达人！三个偶遇地点，都留下了你的足迹。' : '收藏一张合影，点亮一个偶遇地点。';
+  $('collectionNote').textContent = earned.size === 3 ? '✦ 今日合影达人！三个合影地点，都留下了你的足迹。' : '收藏一张合影，点亮一个合影地点。';
 }
 async function saveResult() {
   if (!state.result || state.busy || state.adjusting) return;
@@ -204,14 +204,14 @@ async function saveResult() {
 function downloadPhoto(photo) {
   if (!photo?.blob) return;
   const url = URL.createObjectURL(photo.blob), link = document.createElement('a');
-  link.href = url; link.download = `偶遇-${names[photo.character]}-${sceneInfo[photo.scene].name}-${new Date(photo.createdAt).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })}.jpg`;
+  link.href = url; link.download = `币安照相馆-${names[photo.character]}-${sceneInfo[photo.scene].name}-${new Date(photo.createdAt).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })}.jpg`;
   document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 3000);
 }
 let albumObjectURLs = [];
 function clearAlbumURLs() { for (const url of albumObjectURLs) URL.revokeObjectURL(url); albumObjectURLs = []; }
 async function renderAlbum() {
   await loadAlbum(); clearAlbumURLs(); $('albumGrid').replaceChildren();
-  if (!state.album.length) { const empty = document.createElement('div'); empty.className = 'album-empty'; empty.textContent = '你的第一张偶遇合影，还在等你按下快门。'; $('albumGrid').appendChild(empty); return; }
+  if (!state.album.length) { const empty = document.createElement('div'); empty.className = 'album-empty'; empty.textContent = '你的第一张合影，还在等你按下快门。'; $('albumGrid').appendChild(empty); return; }
   for (const photo of state.album) {
     const card = document.createElement('article'); card.className = 'album-item';
     const url = URL.createObjectURL(photo.blob); albumObjectURLs.push(url);
