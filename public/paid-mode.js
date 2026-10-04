@@ -1,4 +1,4 @@
-import { paidConfig as config } from './paid-config.js?ver=trial-privacy-20261005';
+import { paidConfig as config } from './paid-config.js?ver=trial-privacy-20261005.1';
 import { stampPhotoBlob, SIGNATURE_VERSION } from './signature-stamp.js';
 
 const $ = id => document.getElementById(id);
@@ -83,12 +83,11 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
       const fail = () => { clearTimeout(timeout); script.remove(); reject(userError('人机验证暂时无法加载。请检查网络后重新点击生成，当前不会请求签名或转账。')); };
       script.onerror = fail;
       script.onload = () => {
-        if (!window.turnstile?.ready) return fail();
-        window.turnstile.ready(() => {
-          clearTimeout(timeout);
-          if (!window.turnstile?.render || !window.turnstile?.execute) return fail();
-          resolve(window.turnstile);
-        });
+        clearTimeout(timeout);
+        // onload already runs after api.js initialization; ready() explicitly
+        // rejects async/defer scripts in the production Turnstile client.
+        if (!window.turnstile?.render || !window.turnstile?.execute) return fail();
+        resolve(window.turnstile);
       };
       document.head.append(script);
     }).catch(error => { humanScriptPromise = null; throw error; });
