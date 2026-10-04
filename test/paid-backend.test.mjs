@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { Wallet } from 'ethers';
 import sharp from 'sharp';
-import { createPaidServer } from '../backend/server.mjs';
+import { createPaidServer, loadConfig } from '../backend/server.mjs';
+import { OrderStore } from '../backend/store.mjs';
+import { PRICE_WEI, PRICE_BNB } from '../backend/payment.mjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const photoDataUrl = `data:image/jpeg;base64,${(await sharp({ create: { width: 512, height: 512, channels: 3, background: '#caa' } }).jpeg().toBuffer()).toString('base64')}`;
@@ -37,7 +39,7 @@ async function fixture(t, overrides = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'photo-paid-test-'));
   const chain = new FakeChain();
   const provider = { submissions: 0, polls: 0, preflight: async () => ({ ready: true, provider: 'libtv' }), submit: async () => { provider.submissions++; return { providerJobId: 'mock-existing-job' }; }, poll: async (id, job) => { provider.polls++; return { status: 'succeeded', resultPath: job.inputPath }; }, ...overrides.provider };
-  const config = { rootDir, dataDir, enabled: true, allowedOrigins: ['http://127.0.0.1:48123'], ...overrides.config };
+  const config = { rootDir, dataDir, enabled: true, firstFree: false, allowedOrigins: ['http://127.0.0.1:48123'], ...overrides.config };
   const app = await createPaidServer({ config, chain, provider, autoProcess: false });
   t.after(async () => { await app.close(); await rm(dataDir, { recursive: true, force: true }); });
   const wallet = Wallet.createRandom();
@@ -70,7 +72,7 @@ test('wallet signature binds exact order and a second wallet cannot authorize', 
   await assert.rejects(f.authorize(order, Wallet.createRandom()), { code: 'WRONG_SIGNER' });
   await assert.rejects(f.app.service.authorize(order.id, order.token, '0x12'), { code: 'INVALID_SIGNATURE' });
   const authorized = await f.authorize(order);
-  assert.equal(authorized.payment.valueWei, '1400000000000000');
+  assert.equal(authorized.payment.valueWei, '100000000000000');
   assert.equal(authorized.payment.chainId, 56);
   const other = await f.create(Wallet.createRandom());
   await assert.rejects(f.app.service.authorize(other.id, other.token, await f.wallet.signMessage(other.signatureMessage)), { code: 'WRONG_SIGNER' });
@@ -103,8 +105,8 @@ test('unsupported finality or stale RPC closes checkout', async t => {
 const invalid = [
   ['wrong sender', { tx: { from: Wallet.createRandom().address } }, 'WRONG_PAYER'],
   ['wrong recipient', { tx: { to: Wallet.createRandom().address } }, 'WRONG_RECIPIENT'],
-  ['underpayment', { tx: { value: 1399999999999999n } }, 'WRONG_AMOUNT'],
-  ['overpayment', { tx: { value: 1400000000000001n } }, 'WRONG_AMOUNT'],
+  ['underpayment', { tx: { value: 99999999999999n } }, 'WRONG_AMOUNT'],
+  ['overpayment', { tx: { value: 100000000000001n } }, 'WRONG_AMOUNT'],
   ['wrong chain', { tx: { chainId: 1n } }, 'WRONG_CHAIN'],
   ['wrong order data', { tx: { data: '0x' } }, 'WRONG_ORDER'],
   ['failed receipt', { receipt: { status: 0 } }, 'TX_FAILED'],
@@ -220,4 +222,197 @@ test('HTTP requires explicit allowed origin and token; backend paths are private
   const info = await fetch(`${base}/api/orders/${order.id}`, { headers: { Authorization: `Bearer ${order.token}` } });
   assert.equal(info.headers.get('cache-control'), 'no-store'); assert.equal(info.status, 200);
   const cfg = await (await fetch(`${base}/paid-config.js`)).text(); assert.match(cfg, /apiBase: '\/'/);
+});
+
+test('new AI price is exactly 0.0001 BNB and first-free defaults on with an explicit opt-out', () => {
+  assert.equal(PRICE_BNB, '0.0001'); assert.equal(PRICE_WEI, '100000000000000');
+  assert.equal(loadConfig({}).firstFree, true);
+  assert.equal(loadConfig({ AI_FIRST_FREE: 'false' }).firstFree, false);
+});
+
+test('trial preview is case normalized, unsigned uploads do not consume, and only the exact wallet can claim', async t => {
+  const f = await fixture(t, { config: { firstFree: true } });
+  assert.deepEqual(await f.app.service.trial(f.wallet.address.toLowerCase()), { eligible: true, policy: 'once_per_wallet' });
+  const order = await f.create();
+  assert.equal(order.billingMode, 'free_trial'); assert.equal(order.priceWei, '0'); assert.equal(order.priceBnb, '0');
+  assert.equal(order.payment, undefined); assert.equal((await f.app.service.trial(f.wallet.address)).eligible, true);
+  assert.match(order.signatureMessage, /Billing: free_trial/); assert.match(order.signatureMessage, /Price: 0 BNB \(0 wei\)/);
+  await assert.rejects(f.authorize(order, Wallet.createRandom()), { code: 'WRONG_SIGNER' });
+  await assert.rejects(f.app.service.authorize(order.id, order.token, '0x12'), { code: 'INVALID_SIGNATURE' });
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 0);
+  const granted = await f.authorize(order);
+  assert.equal(granted.status, 'queued'); assert.equal(granted.paymentStatus, 'not_required'); assert.equal(granted.payment, undefined);
+  assert.equal(f.app.service.store.state.consumedTrials[f.wallet.address.toLowerCase()], order.id);
+  assert.equal((await f.app.service.trial(f.wallet.address.toLowerCase())).eligible, false);
+  await assert.rejects(f.app.service.claim(order.id, order.token, hash()), { code: 'PAYMENT_NOT_REQUIRED' });
+  await f.app.service.processQueue();
+  assert.equal(f.provider.submissions, 1); assert.equal((await f.app.service.get(order.id, order.token)).status, 'completed');
+  assert.equal(Object.keys(f.app.service.store.state.consumedTransactions).length, 0);
+  const second = await f.create(undefined, { payerAddress: f.wallet.address.toLowerCase() });
+  assert.equal(second.billingMode, 'paid'); assert.equal(second.priceBnb, '0.0001'); assert.equal(second.priceWei, '100000000000000');
+  const paid = await f.authorize(second); assert.equal(paid.status, 'awaiting_payment'); assert.equal(paid.payment.valueWei, PRICE_WEI);
+});
+
+test('parallel free authorizations and repeated polls grant and submit exactly once, including after restart', async t => {
+  const f = await fixture(t, { config: { firstFree: true }, provider: { poll: async () => ({ status: 'pending' }) } });
+  const order = await f.create(); const signature = await f.wallet.signMessage(order.signatureMessage);
+  await Promise.all(Array.from({ length: 8 }, () => f.app.service.authorize(order.id, order.token, signature)));
+  await Promise.all([f.app.service.processQueue(), f.app.service.processQueue()]);
+  assert.equal(f.provider.submissions, 1);
+  const saved = JSON.parse(await readFile(path.join(f.config.dataDir, 'orders.json'), 'utf8'));
+  assert.equal(saved.version, 2); assert.deepEqual(saved.consumedTrials, { [f.wallet.address.toLowerCase()]: order.id });
+  await f.app.close();
+  let newSubmissions = 0;
+  const reopened = await createPaidServer({ config: f.config, chain: f.chain, provider: { preflight: async () => ({ ready: true }), submit: async () => { newSubmissions++; throw new Error('MUST NOT RESUBMIT'); }, poll: async (jobId, job) => ({ status: 'succeeded', resultPath: job.inputPath }) }, autoProcess: false });
+  try {
+    assert.equal((await reopened.service.trial(f.wallet.address)).eligible, false);
+    await reopened.service.authorize(order.id, order.token, signature); await reopened.service.processQueue();
+    assert.equal((await reopened.service.get(order.id, order.token)).status, 'completed');
+    assert.equal(newSubmissions, 0);
+    const next = await reopened.service.create({ payerAddress: f.wallet.address.toLowerCase(), photoDataUrl, character: 'heyi', scene: 'cafe' });
+    assert.equal(next.billingMode, 'paid'); assert.equal(next.priceWei, PRICE_WEI);
+  } finally { await reopened.close(); }
+});
+
+test('parallel wallet reservations serialize generation and leave the other wallet eligible', async t => {
+  const f = await fixture(t, { config: { firstFree: true } });
+  const first = await f.create(); const otherWallet = Wallet.createRandom(); const second = await f.create(otherWallet);
+  const attempts = await Promise.allSettled([f.authorize(first), f.authorize(second, otherWallet)]);
+  assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(attempts.find(result => result.status === 'rejected').reason.code, 'RESERVATION_BUSY');
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 1);
+  await f.app.service.processQueue();
+  const unclaimed = attempts[0].status === 'rejected' ? [first, f.wallet] : [second, otherWallet];
+  assert.equal((await f.app.service.trial(unclaimed[1].address)).eligible, true);
+  await f.authorize(...unclaimed); await f.app.service.processQueue();
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 2); assert.equal(f.provider.submissions, 2);
+});
+
+test('expired unsigned free orders leave eligibility intact, and a signature cannot replay onto another order', async t => {
+  const f = await fixture(t, { config: { firstFree: true } }); const first = await f.create();
+  const signature = await f.wallet.signMessage(first.signatureMessage);
+  await f.app.service.store.exclusive(async () => {
+    const order = f.app.service.store.state.orders[first.id]; order.expiresAt = Date.now() - 1; order.createdAt = Date.now() - 4 * 60_000; await f.app.service.store.save();
+  });
+  await assert.rejects(f.app.service.authorize(first.id, first.token, signature), { code: 'ORDER_EXPIRED' });
+  const second = await f.create(); assert.equal(second.billingMode, 'free_trial');
+  await assert.rejects(f.app.service.authorize(second.id, second.token, signature), { code: 'WRONG_SIGNER' });
+  assert.equal((await f.app.service.trial(f.wallet.address)).eligible, true);
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 0);
+});
+
+test('free reservation is rolled back on durable write failure and unready provider never consumes eligibility', async t => {
+  const f = await fixture(t, { config: { firstFree: true } }); const order = await f.create();
+  f.provider.preflight = async () => ({ ready: false, reason: 'test unavailable' });
+  await assert.rejects(f.authorize(order), { code: 'SERVICE_UNAVAILABLE' });
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 0);
+  f.provider.preflight = async () => ({ ready: true });
+  const original = f.app.service.store.save.bind(f.app.service.store); f.app.service.store.save = async () => { throw new Error('disk full'); };
+  await assert.rejects(f.authorize(order), /disk full/); f.app.service.store.save = original;
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 0);
+  assert.equal((await f.app.service.get(order.id, order.token)).status, 'awaiting_authorization');
+  await f.app.service.processQueue(); assert.equal(f.provider.submissions, 0);
+  await f.authorize(order); await f.app.service.processQueue(); assert.equal(f.provider.submissions, 1);
+});
+
+test('an ambiguous free submission keeps its trial and resumes only the original provider job', async t => {
+  const f = await fixture(t, { config: { firstFree: true }, provider: {
+    submit: async () => { f.provider.submissions++; throw new Error('accepted but connection lost'); },
+    recover: async () => ({ providerJobId: 'same-free-job' }),
+  } });
+  const order = await f.create(); await f.authorize(order); await f.app.service.processQueue();
+  assert.equal((await f.app.service.get(order.id, order.token)).status, 'review_required');
+  assert.equal((await f.app.service.trial(f.wallet.address)).eligible, false);
+  await f.app.service.processQueue(); assert.equal(f.provider.submissions, 1);
+  await f.app.service.retry(order.id, order.token); await f.app.service.processQueue();
+  assert.equal((await f.app.service.get(order.id, order.token)).status, 'completed'); assert.equal(f.provider.submissions, 1);
+  assert.equal(f.app.service.store.state.consumedTrials[f.wallet.address.toLowerCase()], order.id);
+});
+
+test('terminal free generation failure retains the consumed trial without buying another generation', async t => {
+  const f = await fixture(t, { config: { firstFree: true }, provider: { poll: async () => ({ status: 'failed' }) } });
+  const order = await f.create(); await f.authorize(order); await f.app.service.processQueue();
+  assert.equal((await f.app.service.get(order.id, order.token)).status, 'failed');
+  assert.equal((await f.app.service.trial(f.wallet.address)).eligible, false);
+  await assert.rejects(f.app.service.retry(order.id, order.token), { code: 'RETRY_UNAVAILABLE' });
+  await f.app.service.processQueue(); assert.equal(f.provider.submissions, 1);
+  assert.equal((await f.create()).billingMode, 'paid');
+});
+
+test('expected billing mode prevents stale first-free buttons creating paid orders', async t => {
+  const f = await fixture(t, { config: { firstFree: true } });
+  await assert.rejects(f.create(undefined, { expectedBillingMode: 'paid' }), { code: 'TRIAL_CHANGED' });
+  assert.equal(Object.keys(f.app.service.store.state.orders).length, 0);
+  const order = await f.create(undefined, { expectedBillingMode: 'free_trial' }); await f.authorize(order); await f.app.service.processQueue();
+  await assert.rejects(f.create(undefined, { expectedBillingMode: 'free_trial' }), { code: 'TRIAL_CHANGED' });
+  await assert.rejects(f.create(undefined, { expectedBillingMode: 'free' }), { code: 'INVALID_BILLING_MODE' });
+  assert.equal(Object.keys(f.app.service.store.state.orders).length, 1);
+  assert.equal((await f.create(undefined, { expectedBillingMode: 'paid' })).priceWei, PRICE_WEI);
+});
+
+test('legacy v1 store migration preserves signed order and its exact original payment price', async t => {
+  const f = await fixture(t); const order = await f.create();
+  const original = f.app.service.store.state.orders[order.id];
+  original.payment.valueWei = '1400000000000000'; original.payment.valueHex = '0x4f94e4c440000';
+  original.signatureMessage = original.signatureMessage.replace('0.0001 BNB (100000000000000 wei)', '0.0014 BNB (1400000000000000 wei)');
+  delete original.billingMode; delete original.priceBnb; delete original.priceWei;
+  f.app.service.store.state.version = 1; delete f.app.service.store.state.consumedTrials;
+  const oldHash = hash(); f.app.service.store.state.consumedTransactions[oldHash] = 'old-existing-order';
+  await f.app.service.store.save(); await f.app.close();
+  const reopened = await createPaidServer({ config: { ...f.config, firstFree: true }, chain: f.chain, provider: f.provider, autoProcess: false });
+  try {
+    const existing = await reopened.service.get(order.id, order.token);
+    assert.equal(existing.billingMode, 'paid'); assert.equal(existing.priceBnb, '0.0014'); assert.equal(existing.priceWei, '1400000000000000');
+    assert.equal(existing.signatureMessage, original.signatureMessage);
+    const authorized = await reopened.service.authorize(order.id, order.token, await f.wallet.signMessage(existing.signatureMessage));
+    assert.equal(authorized.payment.valueWei, '1400000000000000');
+    const tx = f.chain.pay(reopened.service.store.state.orders[order.id]); await reopened.service.claim(order.id, order.token, tx); await reopened.service.processQueue();
+    assert.equal((await reopened.service.get(order.id, order.token)).status, 'completed');
+    assert.equal(reopened.service.store.state.consumedTransactions[oldHash], 'old-existing-order');
+    assert.equal(reopened.service.store.state.version, 2); assert.deepEqual(reopened.service.store.state.consumedTrials, {});
+  } finally { await reopened.close(); }
+});
+
+test('damaged or missing v2 trial ledger refuses startup instead of granting free credits again', async t => {
+  const f = await fixture(t, { config: { firstFree: true } }); const order = await f.create(); await f.authorize(order); await f.app.close();
+  const filename = path.join(f.config.dataDir, 'orders.json'); const saved = JSON.parse(await readFile(filename, 'utf8'));
+  for (const value of [undefined, [], {}, { [f.wallet.address.toLowerCase()]: 'broken-id' }]) {
+    const damaged = { ...saved, consumedTrials: value }; await writeFile(filename, JSON.stringify(damaged));
+    const store = new OrderStore(f.config.dataDir);
+    await assert.rejects(store.open(), /trial ledger|trial reservation/);
+    assert.equal((await readFile(filename, 'utf8')), JSON.stringify(damaged));
+  }
+});
+
+test('HTTP trial preview, signed free generation, private result and used-wallet paid checkout work without a transaction', async t => {
+  const f = await fixture(t, { config: { firstFree: true } });
+  await new Promise(resolve => f.app.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${f.app.server.address().port}`;
+  const headers = { 'Content-Type': 'application/json', Origin: f.config.allowedOrigins[0] };
+  const health = await (await fetch(`${base}/api/health`)).json();
+  assert.equal(health.priceBnb, '0.0001'); assert.equal(health.priceWei, PRICE_WEI); assert.equal(health.firstFree, true); assert.equal(health.trialPolicy, 'once_per_wallet');
+  assert.deepEqual(await (await fetch(`${base}/api/trial?address=${f.wallet.address.toLowerCase()}`)).json(), { eligible: true, policy: 'once_per_wallet' });
+  assert.equal((await fetch(`${base}/api/trial?address=invalid`)).status, 400);
+  const created = await fetch(`${base}/api/orders`, { method: 'POST', headers, body: JSON.stringify({ payerAddress: f.wallet.address, photoDataUrl, character: 'cz', scene: 'terrace', expectedBillingMode: 'free_trial' }) });
+  assert.equal(created.status, 201); const order = await created.json(); const secured = { ...headers, Authorization: `Bearer ${order.token}` };
+  const authorized = await fetch(`${base}/api/orders/${order.id}/authorize`, { method: 'POST', headers: secured, body: JSON.stringify({ signature: await f.wallet.signMessage(order.signatureMessage) }) });
+  assert.equal(authorized.status, 200); const info = await authorized.json(); assert.equal(info.status, 'queued'); assert.equal(info.payment, undefined);
+  assert.equal((await fetch(`${base}/api/orders/${order.id}/payment`, { method: 'POST', headers: secured, body: JSON.stringify({ txHash: hash() }) })).status, 409);
+  await f.app.service.processQueue();
+  const finished = await (await fetch(`${base}/api/orders/${order.id}`, { headers: secured })).json(); assert.equal(finished.status, 'completed');
+  const result = await fetch(`${base}${finished.resultUrl}`, { headers: secured }); assert.equal(result.status, 200); assert.equal(result.headers.get('content-type'), 'image/jpeg');
+  assert.equal((await fetch(`${base}${finished.resultUrl}`)).status, 404);
+  assert.equal((await (await fetch(`${base}/api/trial?address=${f.wallet.address}`)).json()).eligible, false);
+  const next = await f.create(); assert.equal(next.billingMode, 'paid'); assert.equal(next.priceWei, PRICE_WEI);
+  assert.equal(f.chain.transactions.size, 0); assert.equal(f.provider.submissions, 1);
+});
+
+test('trial endpoint is unavailable until AI backend is ready and opt-out produces only paid orders', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.app.service.ready()).firstFree, false);
+  assert.equal((await f.app.service.trial(f.wallet.address)).eligible, false);
+  assert.equal((await f.create()).billingMode, 'paid');
+  f.app.service.config.enabled = false;
+  await assert.rejects(f.app.service.trial(f.wallet.address), { code: 'SERVICE_UNAVAILABLE' });
+  assert.equal(Object.keys(f.app.service.store.state.consumedTrials).length, 0);
 });

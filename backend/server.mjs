@@ -15,7 +15,7 @@ export function loadConfig(env = process.env) {
   const port = Number(env.PORT || 4176);
   return {
     rootDir: ROOT_DIR, dataDir: path.resolve(env.PAID_DATA_DIR || path.join(ROOT_DIR, 'private-data')),
-    enabled: env.PAID_ENABLED === 'true', port, host: env.HOST || '127.0.0.1', rpcUrl: env.BSC_RPC_URL,
+    enabled: env.PAID_ENABLED === 'true', firstFree: env.AI_FIRST_FREE !== 'false', port, host: env.HOST || '127.0.0.1', rpcUrl: env.BSC_RPC_URL,
     allowedOrigins: (env.FRONTEND_ORIGINS || `http://127.0.0.1:${port},http://localhost:${port}`).split(',').map(s => s.trim()).filter(Boolean),
     serviceDomain: env.SERVICE_DOMAIN || 'cz-heyi-photo-game', cliPath: env.LIBTV_CLI, model: env.LIBTV_MODEL,
     generationBudget: Number(env.LIBTV_GENERATION_BUDGET || 0), projectUuid: env.LIBTV_PROJECT_UUID, accountId: env.LIBTV_ACCOUNT_ID,
@@ -95,6 +95,7 @@ export async function createPaidServer({ config = loadConfig(), chain, provider,
       const ip = req.socket.remoteAddress || 'unknown'; // Never trust client-controlled X-Forwarded-For.
       limiter.check(`all:${ip}`, 240, 60_000);
       if (req.method === 'GET' && url.pathname === '/api/health') { json(200, await service.ready()); return; }
+      if (req.method === 'GET' && url.pathname === '/api/trial') { json(200, await service.trial(url.searchParams.get('address'))); return; }
       if (req.method === 'POST' && url.pathname === '/api/orders') { limiter.check(`new:${ip}`, 6, 60_000); json(201, await service.create(await readJson(req))); return; }
       const match = /^\/api\/orders\/([0-9a-f-]{36})(?:\/(authorize|payment|result|retry))?$/.exec(url.pathname);
       requireValue(match, 404, 'NOT_FOUND', '接口不存在');

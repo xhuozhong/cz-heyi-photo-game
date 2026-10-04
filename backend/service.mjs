@@ -1,11 +1,11 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
-import { getAddress, verifyMessage, hexlify, toUtf8Bytes } from 'ethers';
+import { getAddress, verifyMessage, hexlify, toUtf8Bytes, formatEther } from 'ethers';
 import { ApiError, requireValue } from './errors.mjs';
 import { OrderStore, atomicWrite } from './store.mjs';
 import { normalizePhoto, saveResult } from './images.mjs';
-import { CHAIN_ID, PRICE_WEI, RECIPIENT, TX_PATTERN, chainPreflight, verifyPayment } from './payment.mjs';
+import { CHAIN_ID, PRICE_WEI, PRICE_BNB, RECIPIENT, TX_PATTERN, chainPreflight, verifyPayment } from './payment.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const unpaid = order => ['awaiting_authorization', 'awaiting_payment'].includes(order.status);
@@ -13,7 +13,7 @@ const IN_PROGRESS = ['queued', 'submitting', 'generating'];
 
 export class PaidService {
   constructor(config, chain, provider) {
-    this.config = { enabled: false, orderTtlMs: 30 * 60_000, maxOpenOrders: 32, maxOrders: 10000, maxStoredPhotoBytes: 256 * 1024 * 1024, maxInProgress: 1, ...config };
+    this.config = { enabled: false, firstFree: true, orderTtlMs: 30 * 60_000, maxOpenOrders: 32, maxOrders: 10000, maxStoredPhotoBytes: 256 * 1024 * 1024, maxInProgress: 1, ...config };
     this.chain = chain;
     this.provider = provider;
     this.store = new OrderStore(this.config.dataDir);
@@ -31,11 +31,19 @@ export class PaidService {
       await chainPreflight(this.chain);
       value = { ready: true };
     } catch (error) { value = { ready: false, reason: error instanceof ApiError ? error.message : '生成或链上服务暂不可用' }; }
-    value = { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: '0.0014', priceWei: PRICE_WEI, provider: 'libtv' };
+    value = { ...value, chainId: CHAIN_ID, recipient: RECIPIENT, priceBnb: PRICE_BNB, priceWei: PRICE_WEI, firstFree: this.config.firstFree, trialPolicy: 'once_per_wallet', provider: 'libtv' };
     this.healthCache = { at: Date.now(), value };
     return value;
   }
   async requireReady() { const health = await this.ready(true); requireValue(health.ready, 503, 'SERVICE_UNAVAILABLE', health.reason); }
+  wallet(address) {
+    try { return getAddress(address); } catch { throw new ApiError(400, 'INVALID_WALLET', '钱包地址格式不正确'); }
+  }
+  async trial(address) {
+    const wallet = this.wallet(address);
+    await this.requireReady();
+    return this.store.exclusive(() => ({ eligible: !!this.config.firstFree && !this.store.state.consumedTrials[wallet.toLowerCase()], policy: 'once_per_wallet' }));
+  }
   authenticate(id, token) {
     const order = this.store.state.orders[id];
     const incoming = Buffer.from(digest(typeof token === 'string' ? token : ''));
@@ -46,9 +54,11 @@ export class PaidService {
   view(order) {
     return {
       id: order.id, status: order.status, character: order.character, scene: order.scene, options: order.options,
+      billingMode: order.billingMode || 'paid', priceWei: order.priceWei || order.payment.valueWei,
+      priceBnb: order.priceBnb || formatEther(order.payment.valueWei),
       createdAt: order.createdAt, expiresAt: order.expiresAt, payerAddress: order.payerAddress,
       signatureMessage: order.status === 'awaiting_authorization' ? order.signatureMessage : undefined,
-      payment: order.authorizedAt ? order.payment : undefined,
+      payment: order.authorizedAt && order.billingMode !== 'free_trial' ? order.payment : undefined,
       paymentStatus: order.paymentStatus || 'unpaid', txHash: order.txHash || order.pendingTxHash,
       resultUrl: order.status === 'completed' ? `/api/orders/${order.id}/result` : undefined,
       message: order.message, recoverable: order.status === 'generating' || (order.status === 'review_required' && !!this.provider?.recover),
@@ -76,32 +86,36 @@ export class PaidService {
       const all = Object.values(this.store.state.orders);
       requireValue(all.length < this.config.maxOrders, 503, 'CAPACITY_FULL', '服务容量暂满，请稍后再试');
       requireValue(all.filter(o => unpaid(o)).length < this.config.maxOpenOrders && all.filter(o => IN_PROGRESS.includes(o.status)).length < this.config.maxInProgress, 503, 'BUSY', '生成服务繁忙，请稍后再试');
-      let payerAddress;
-      try { payerAddress = getAddress(body.payerAddress); } catch { throw new ApiError(400, 'INVALID_WALLET', '钱包地址格式不正确'); }
+      const payerAddress = this.wallet(body.payerAddress);
       requireValue(!all.some(o => o.payerAddress.toLowerCase() === payerAddress.toLowerCase() && (IN_PROGRESS.includes(o.status) || (unpaid(o) && Date.now() < o.expiresAt))), 409, 'ACTIVE_ORDER', '此钱包已有未完成订单，请继续原订单');
       requireValue(['cz', 'heyi'].includes(body.character) && ['terrace', 'cafe', 'street'].includes(body.scene), 400, 'INVALID_SELECTION', '请选择有效的伙伴与场景');
       const options = { gender: body.options?.gender || 'male', body: body.options?.body || 'standard', outfit: body.options?.outfit || 'black' };
       requireValue(['male', 'female'].includes(options.gender) && ['slim', 'standard', 'full'].includes(options.body) && ['black', 'cream', 'red'].includes(options.outfit), 400, 'INVALID_OPTIONS', '服装或身材选项不正确');
+      const billingMode = this.config.firstFree && !this.store.state.consumedTrials[payerAddress.toLowerCase()] ? 'free_trial' : 'paid';
+      requireValue(body.expectedBillingMode === undefined || ['free_trial', 'paid'].includes(body.expectedBillingMode), 400, 'INVALID_BILLING_MODE', '请选择有效的计费方式');
+      requireValue(body.expectedBillingMode === undefined || body.expectedBillingMode === billingMode, 409, 'TRIAL_CHANGED', '首次免费资格已变化，请重新确认本次费用');
       const normalized = await normalizePhoto(body.photoDataUrl);
       requireValue(all.reduce((sum, o) => sum + (o.photoBytes || 0), 0) + normalized.length <= this.config.maxStoredPhotoBytes, 503, 'PHOTO_STORAGE_FULL', '照片存储容量暂满，请稍后再试');
       const { latest } = await chainPreflight(this.chain);
       const id = randomUUID();
       const token = randomBytes(32).toString('base64url');
       const createdAt = Date.now();
+      const priceWei = billingMode === 'free_trial' ? '0' : PRICE_WEI;
+      const priceBnb = billingMode === 'free_trial' ? '0' : PRICE_BNB;
       const order = {
         id, tokenHash: digest(token), payerAddress, createdAt, expiresAt: createdAt + this.config.orderTtlMs,
-        status: 'awaiting_authorization', paymentStatus: 'unpaid', character: body.character, scene: body.scene, options,
+        status: 'awaiting_authorization', paymentStatus: billingMode === 'free_trial' ? 'not_required' : 'unpaid', billingMode, priceBnb, priceWei, character: body.character, scene: body.scene, options,
         photoHash: digest(normalized), photoBytes: normalized.length, nonce: randomBytes(24).toString('hex'), startBlock: latest.number,
-        payment: { chainId: CHAIN_ID, to: RECIPIENT, valueWei: PRICE_WEI, valueHex: `0x${BigInt(PRICE_WEI).toString(16)}`, data: hexlify(toUtf8Bytes(`cz-heyi-photo:${id}`)) },
+        payment: billingMode === 'paid' ? { chainId: CHAIN_ID, to: RECIPIENT, valueWei: priceWei, valueHex: `0x${BigInt(priceWei).toString(16)}`, data: hexlify(toUtf8Bytes(`cz-heyi-photo:${id}`)) } : undefined,
       };
       order.signatureMessage = [
         '偶遇照相馆 · AI 合影订单授权',
         `Service: ${this.config.serviceDomain || 'cz-heyi-photo-game'}`,
         `Order: ${id}`, `Wallet: ${payerAddress}`, `Chain: BNB Smart Chain (${CHAIN_ID})`,
-        `Recipient: ${RECIPIENT}`, 'Price: 0.0014 BNB (1400000000000000 wei)',
+        `Billing: ${billingMode}`, `Recipient: ${RECIPIENT}`, `Price: ${priceBnb} BNB (${priceWei} wei)`,
         `Photo SHA-256: ${order.photoHash}`, `Selection: ${order.character}/${order.scene}/${JSON.stringify(options)}`,
         `Nonce: ${order.nonce}`, `Expires: ${new Date(order.expiresAt).toISOString()}`,
-        '此签名仅绑定本订单，不是转账或代币授权。付款需您另行在钱包确认。',
+        billingMode === 'free_trial' ? '此签名领取本钱包一次免费 AI 合影并绑定本订单，无需转账或代币授权。' : '此签名仅绑定本订单，不是转账或代币授权。付款需您另行在钱包确认。',
       ].join('\n');
       await mkdir(this.store.orderDir(id), { recursive: true, mode: 0o700 });
       try {
@@ -113,7 +127,7 @@ export class PaidService {
     });
   }
   async authorize(id, token, signature) {
-    return this.store.exclusive(async () => {
+    const response = await this.store.exclusive(async () => {
       const order = this.authenticate(id, token);
       if (!unpaid(order)) return this.view(order);
       requireValue(Date.now() <= order.expiresAt, 410, 'ORDER_EXPIRED', '订单已过期，请勿向此订单付款');
@@ -123,16 +137,28 @@ export class PaidService {
       requireValue(!Object.values(this.store.state.orders).some(other => other.id !== id && (IN_PROGRESS.includes(other.status) || (other.authorizedAt && unpaid(other) && Date.now() <= other.expiresAt))), 409, 'RESERVATION_BUSY', '已有订单正在等待付款或生成，请稍后再试');
       await this.requireReady();
       if (!order.authorizedAt) {
-        const { latest } = await chainPreflight(this.chain);
-        order.authorizedAt = Date.now(); order.startBlock = latest.number; order.status = 'awaiting_payment';
+        if (order.billingMode === 'free_trial') {
+          const wallet = order.payerAddress.toLowerCase();
+          requireValue(this.config.firstFree, 409, 'TRIAL_DISABLED', '首次免费体验暂未开放，请重新创建订单');
+          requireValue(!this.store.state.consumedTrials[wallet] || this.store.state.consumedTrials[wallet] === id, 409, 'TRIAL_ALREADY_USED', '此钱包的首次免费体验已用于另一订单，请继续原订单');
+          // Reserve the normalized wallet and its generation together before any provider call.
+          this.store.state.consumedTrials[wallet] = id;
+          order.authorizedAt = Date.now(); order.trialReservedAt = order.authorizedAt;
+          order.status = 'queued'; order.paymentStatus = 'not_required'; order.message = '首次免费体验已领取，等待 AI 生成';
+        } else {
+          const { latest } = await chainPreflight(this.chain);
+          order.authorizedAt = Date.now(); order.startBlock = latest.number; order.status = 'awaiting_payment';
+        }
         await this.store.save();
       }
       return this.view(order);
     });
+    this.kick(); return response;
   }
   async claim(id, token, txHash) {
     const response = await this.store.exclusive(async () => {
       const order = this.authenticate(id, token);
+      requireValue(order.billingMode !== 'free_trial', 409, 'PAYMENT_NOT_REQUIRED', '首次免费订单无需付款，请继续原订单');
       requireValue(typeof txHash === 'string' && TX_PATTERN.test(txHash), 400, 'INVALID_TX', '交易哈希格式不正确');
       const hash = txHash.toLowerCase();
       if (!unpaid(order) && !(order.status === 'review_required' && order.pendingTxHash && !order.txHash)) {
@@ -226,7 +252,7 @@ export class PaidService {
         await this.store.exclusive(async () => {
           const current = this.store.state.orders[id];
           if (recovered?.providerJobId) { current.providerJobId = recovered.providerJobId; current.status = 'generating'; }
-          else { current.status = 'review_required'; current.message = '提交时服务中断，已保留付款，需核对生成任务；不会自动重复扣额度'; }
+          else { current.status = 'review_required'; current.message = current.billingMode === 'free_trial' ? '提交时服务中断，首次免费订单已保留，需核对原生成任务；不会自动重复扣额度' : '提交时服务中断，已保留付款，需核对生成任务；不会自动重复扣额度'; }
           await this.store.save(); order = structuredClone(current);
         });
       }
@@ -237,7 +263,7 @@ export class PaidService {
         let submission;
         try { submission = await this.provider.submit(job); requireValue(typeof submission?.providerJobId === 'string' && submission.providerJobId.length > 0, 500, 'NO_PROVIDER_JOB', '生成任务信息缺失'); }
         catch {
-          await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'review_required'; current.message = '生成提交状态需核对，付款已保留；不会自动重复扣额度'; await this.store.save(); });
+          await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'review_required'; current.message = current.billingMode === 'free_trial' ? '生成提交状态需核对，首次免费订单已保留；请恢复原订单，不会自动重复扣额度' : '生成提交状态需核对，付款已保留；不会自动重复扣额度'; await this.store.save(); });
           continue;
         }
         await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.providerJobId = submission.providerJobId; current.status = 'generating'; current.message = 'AI 正在生成合影'; await this.store.save(); order = structuredClone(current); });
@@ -247,7 +273,7 @@ export class PaidService {
         const progress = await this.provider.poll(order.providerJobId, job);
         if (progress?.status === 'pending') continue;
         if (progress?.status === 'failed') {
-          await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'failed'; current.message = 'AI 生成失败，付款凭证已保留，请联系运营方处理'; await this.store.save(); });
+          await this.store.exclusive(async () => { const current = this.store.state.orders[id]; current.status = 'failed'; current.message = current.billingMode === 'free_trial' ? 'AI 生成失败，首次免费订单已保留，请联系运营方处理' : 'AI 生成失败，付款凭证已保留，请联系运营方处理'; await this.store.save(); });
           continue;
         }
         requireValue(progress?.status === 'succeeded' && path.isAbsolute(progress.resultPath || ''), 500, 'INVALID_PROVIDER_RESULT', '生成结果不正确');

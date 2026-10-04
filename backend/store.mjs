@@ -39,8 +39,24 @@ export class OrderStore {
     await this.lock.sync();
     try {
       try { this.state = JSON.parse(await readFile(path.join(this.dataDir, 'orders.json'), 'utf8')); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; this.state = { version: 1, orders: {}, consumedTransactions: {} }; }
-      if (this.state.version !== 1 || !this.state.orders || !this.state.consumedTransactions) throw new Error('Unsupported or damaged order store; refusing to start');
+      catch (error) { if (error.code !== 'ENOENT') throw error; this.state = { version: 2, orders: {}, consumedTransactions: {}, consumedTrials: {} }; }
+      const record = value => value && typeof value === 'object' && !Array.isArray(value);
+      if (![1, 2].includes(this.state.version) || !record(this.state.orders) || !record(this.state.consumedTransactions)) throw new Error('Unsupported or damaged order store; refusing to start');
+      const migrating = this.state.version === 1;
+      if (migrating) {
+        // Existing signed order messages/payment amounts are never rewritten.
+        if (this.state.consumedTrials !== undefined && !record(this.state.consumedTrials)) throw new Error('Damaged trial ledger; refusing to start');
+        this.state.consumedTrials ??= {};
+        this.state.version = 2;
+      }
+      if (!record(this.state.consumedTrials)) throw new Error('Damaged trial ledger; refusing to start');
+      for (const [wallet, id] of Object.entries(this.state.consumedTrials)) {
+        if (!/^0x[0-9a-f]{40}$/.test(wallet) || typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id)) throw new Error('Damaged trial ledger; refusing to start');
+      }
+      for (const order of Object.values(this.state.orders)) {
+        if (order.billingMode === 'free_trial' && order.authorizedAt && this.state.consumedTrials[order.payerAddress?.toLowerCase()] !== order.id) throw new Error('Free order missing durable trial reservation; refusing to start');
+      }
+      if (migrating) await this.save();
     } catch (error) { await this.close(); throw error; }
   }
   async close() { await this.tail; if (this.lock) { await this.lock.close(); this.lock = null; await unlink(this.lockPath).catch(error => { if (error.code !== 'ENOENT') throw error; }); } }

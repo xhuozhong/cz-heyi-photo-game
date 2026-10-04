@@ -7,7 +7,7 @@
   <meta name="description" content="上传头像，选择 CZ 或何一、身体版型和服装，在浏览器里制作你的纪念合影。">
   <title>偶遇照相馆 · CZ & 何一</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?ver=generated-templates-20261004">
+  <link rel="stylesheet" href="styles.css?ver=ai-first-free-20261004">
 </head>
 <body>
   <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -33,7 +33,7 @@
       <section class="controls" aria-label="合影设置">
         <div class="mode-switch" role="group" aria-label="合影制作方式">
           <button id="modeFree" class="selected" aria-pressed="true"><strong>免费合影</strong><span>本地模板 · 不收费</span></button>
-          <button id="modePaid" aria-pressed="false"><strong>AI 合影</strong><span>0.0014 BNB / 次</span></button>
+          <button id="modePaid" aria-pressed="false"><strong>AI 合影</strong><span>首次免费 · 之后 0.0001 BNB</span></button>
         </div>
         <div class="section-heading"><span class="step">01</span><h2>这一次，和谁合影？</h2></div>
         <div class="character-grid" role="group" aria-label="合影伙伴">
@@ -61,15 +61,17 @@
         <button id="shootButton" class="shoot-button" disabled><svg><use href="#camera"/></svg><span>上传照片，准备合影</span></button>
         <div id="paidPanel" class="paid-panel" hidden>
           <div class="paid-title"><svg><use href="#spark"/></svg><h3>让 AI 留下这次偶遇</h3></div>
-          <p class="paid-description">付款确认后，用你的照片与所选伙伴生成一张新的合影。</p>
-          <dl class="payment-details"><div><dt>单次费用</dt><dd><strong>0.0014 BNB</strong><span>钱包另计网络手续费</span></dd></div><div><dt>支付网络</dt><dd>BNB Smart Chain 主网</dd></div><div class="recipient-row"><dt>收款地址</dt><dd><code id="paidRecipient">0x7C4383da12264BeD66D125EF34d4a4A8Bb8979F2</code></dd></div></dl>
+          <p class="paid-description">每个钱包首次 AI 合影免费，之后每次 0.0001 BNB。用你的照片与所选伙伴生成一张新的合影。</p>
+          <dl class="payment-details"><div><dt>本次费用</dt><dd><strong id="paidPrice">首次免费</strong><span id="paidFeeNote">之后 0.0001 BNB / 次，付费时钱包另计网络手续费</span></dd></div><div><dt>钱包网络</dt><dd>BNB Smart Chain 主网</dd></div><div class="recipient-row"><dt>收款地址</dt><dd><code id="paidRecipient">0x7C4383da12264BeD66D125EF34d4a4A8Bb8979F2</code></dd></div></dl>
           <p id="paidAvailability" class="paid-availability" role="status" aria-live="polite">AI 合影尚未开放。你可以继续免费拍摄。</p>
           <button id="paidHealthRetry" class="text-button" hidden>重新检查服务</button>
+          <p id="paidTrialStatus" class="paid-wallet" role="status" aria-live="polite">连接钱包后，核验首次免费资格。</p>
+          <button id="paidTrialRetry" class="text-button" hidden>重新核验首次免费资格</button>
           <label class="paid-consent"><input id="paidConsent" type="checkbox"><span>我同意将所上传的照片发送至合影服务和 LibTV，用于本次 AI 合影。</span></label>
-          <p class="wallet-explanation">钱包会先请求签名确认订单（不扣费），再请求转账。请在钱包中核对网络、金额和收款地址。</p>
+          <p id="paidWalletExplanation" class="wallet-explanation">首次免费只需钱包签名确认订单，不会请求转账。后续付费合影会在签名后请求支付 0.0001 BNB。</p>
           <button id="paidConnect" class="wallet-button" disabled>连接钱包</button>
           <p id="paidWallet" class="paid-wallet" hidden></p>
-          <button id="paidGenerate" class="shoot-button paid-generate" disabled><svg><use href="#spark"/></svg><span>支付 0.0014 BNB 并生成</span></button>
+          <button id="paidGenerate" class="shoot-button paid-generate" disabled><svg><use href="#spark"/></svg><span>核验资格后生成 AI 合影</span></button>
           <div id="paidOrderInfo" class="paid-order-info" hidden><p id="paidOrderStatus" role="status" aria-live="polite"></p><p id="paidOrderId"></p><p id="paidTransaction" hidden></p><p class="receipt-note">订单凭证保存在此浏览器，清理站点数据可能丢失，请保存订单号和交易哈希。照片完成后记得下载。</p><div id="paidTxRecovery" class="paid-tx-recovery" hidden><label for="paidTxHash">如果已在钱包完成付款，请粘贴该笔交易哈希<input id="paidTxHash" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="0x…"></label><button id="paidSubmitTx" class="wallet-button">核验这笔付款，继续合影</button></div><button id="paidResume" class="text-button" hidden>继续这笔订单</button><button id="paidPause" class="text-button" hidden>稍后查看，返回免费模式</button></div>
           <p id="paidError" class="feedback" role="status" aria-live="polite" hidden></p>
         </div>
@@ -106,6 +108,6 @@
     <label for="cropX">左右位置<input id="cropX" type="range" min="5" max="95" value="50"></label><label for="cropY">上下位置<input id="cropY" type="range" min="5" max="95" value="40"></label><label for="cropSize">脸部大小<input id="cropSize" type="range" min="8" max="80" value="30"></label>
   </div><button id="cropConfirm" class="download-button">使用圈选头像</button></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="app.js?ver=generated-templates-20261004"></script>
+  <script type="module" src="app.js?ver=ai-first-free-20261004"></script>
 </body>
 </html>

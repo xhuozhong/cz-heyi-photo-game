@@ -1,5 +1,5 @@
 import { prepareAvatar, createComposition, encodePhoto, AvatarError } from './template-compositor.js?ver=generated-templates-20261004';
-import { createPaidMode } from './paid-mode.js?ver=generated-templates-20261004';
+import { createPaidMode } from './paid-mode.js?ver=ai-first-free-20261004';
 import { SIGNATURE_VERSION } from './signature-stamp.js';
 const $ = id => document.getElementById(id);
 const sceneInfo = {

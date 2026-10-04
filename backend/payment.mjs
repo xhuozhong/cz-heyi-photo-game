@@ -1,8 +1,9 @@
-import { JsonRpcProvider, getAddress } from 'ethers';
+import { JsonRpcProvider, getAddress, formatEther } from 'ethers';
 import { ApiError, requireValue } from './errors.mjs';
 
 export const CHAIN_ID = 56;
-export const PRICE_WEI = '1400000000000000';
+export const PRICE_WEI = '100000000000000';
+export const PRICE_BNB = '0.0001';
 export const RECIPIENT = getAddress('0x7c4383da12264bed66d125ef34d4a4a8bb8979f2');
 export const TX_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 
@@ -35,7 +36,7 @@ export async function verifyPayment(chain, order, hash) {
   requireValue(BigInt(tx.chainId) === BigInt(order.payment.chainId), 400, 'WRONG_CHAIN', '请使用 BNB Smart Chain 主网');
   requireValue(same(tx.from, order.payerAddress) && same(receipt.from, order.payerAddress), 400, 'WRONG_PAYER', '付款钱包与订单钱包不同');
   requireValue(same(tx.to, order.payment.to) && same(receipt.to, order.payment.to), 400, 'WRONG_RECIPIENT', '收款地址不正确');
-  requireValue(BigInt(tx.value) === BigInt(order.payment.valueWei), 400, 'WRONG_AMOUNT', '付款金额必须为 0.0014 BNB');
+  requireValue(BigInt(tx.value) === BigInt(order.payment.valueWei), 400, 'WRONG_AMOUNT', `付款金额必须为 ${formatEther(order.payment.valueWei)} BNB`);
   requireValue(same(tx.data || '0x', order.payment.data), 400, 'WRONG_ORDER', '交易不属于此订单');
   requireValue(receipt.status === 1, 400, 'TX_FAILED', '链上交易未成功');
   requireValue(Number.isSafeInteger(receipt.blockNumber) && tx.blockNumber === receipt.blockNumber && same(tx.blockHash, receipt.blockHash), 400, 'BLOCK_MISMATCH', '链上区块信息不一致');

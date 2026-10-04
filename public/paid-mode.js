@@ -1,4 +1,4 @@
-import { paidConfig as config } from './paid-config.js';
+import { paidConfig as config } from './paid-config.js?ver=ai-first-free-20261004';
 import { stampPhotoBlob, SIGNATURE_VERSION } from './signature-stamp.js';
 
 const $ = id => document.getElementById(id);
@@ -32,12 +32,12 @@ function backendBase() {
 
 export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onResult }) {
   const base = backendBase();
-  const state = { mode: 'free', ready: false, checking: false, busy: false, stage: 'closed', account: '', order: null, message: '', error: '', storageWarning: '', receiptConflict: null };
+  const state = { mode: 'free', ready: false, checking: false, busy: false, stage: 'closed', account: '', order: null, message: '', error: '', storageWarning: '', receiptConflict: null, trialEligibility: 'unknown', trialAddress: '' };
   let operation = 0;
 
   function receiptMetadata(order) {
     // Whitelist metadata: uploaded photo bytes and result blobs never enter storage.
-    const keys = ['id', 'token', 'status', 'signatureMessage', 'payerAddress', 'character', 'scene', 'createdAt', 'expiresAt', 'txHash', 'paymentRequested', 'recoverable', 'paymentStatus'];
+    const keys = ['id', 'token', 'status', 'signatureMessage', 'payerAddress', 'character', 'scene', 'createdAt', 'expiresAt', 'txHash', 'paymentRequested', 'recoverable', 'paymentStatus', 'billingMode', 'priceBnb', 'priceWei'];
     const receipt = Object.fromEntries(keys.filter(key => order[key] !== undefined).map(key => [key, order[key]]));
     if (order.options) receipt.options = Object.fromEntries(['gender', 'body', 'outfit'].filter(key => order.options[key] !== undefined).map(key => [key, order.options[key]]));
     if (order.payment) receipt.payment = Object.fromEntries(['chainId', 'to', 'valueWei', 'valueHex', 'data'].filter(key => order.payment[key] !== undefined).map(key => [key, order.payment[key]]));
@@ -80,7 +80,8 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     return userError('浏览器暂时无法保存订单凭证。请允许本站存储后再试，当前不会请求签名或转账。');
   }
   function warnReceiptLoss() {
-    state.storageWarning = state.receiptConflict ? '另一个标签页已有未完成订单，已保留该订单凭证。本页付款仍会继续核验，请保存本页的订单号和交易哈希，不要再次付款，合影完成后立即下载。' : '浏览器暂时无法保存订单凭证，本次付款仍会继续核验。请保存页面上的订单号和交易哈希，不要再次付款，合影完成后立即下载。';
+    if (isTrial()) state.storageWarning = state.receiptConflict ? '另一个标签页已有未完成订单，已保留该订单凭证。本页免费合影仍会继续制作，请保存本页订单号，完成后立即下载。' : '浏览器暂时无法保存订单凭证，免费合影仍会继续制作。请保存本页订单号，完成后立即下载。';
+    else state.storageWarning = state.receiptConflict ? '另一个标签页已有未完成订单，已保留该订单凭证。本页付款仍会继续核验，请保存本页的订单号和交易哈希，不要再次付款，合影完成后立即下载。' : '浏览器暂时无法保存订单凭证，本次付款仍会继续核验。请保存页面上的订单号和交易哈希，不要再次付款，合影完成后立即下载。';
   }
   try {
     const durable = localStorage.getItem(RECEIPT_KEY);
@@ -93,6 +94,30 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     }
   } catch { /* Ignore invalid or unavailable storage. */ }
 
+  function isTrial(order = state.order) { return order?.billingMode === 'free_trial'; }
+  function orderQuote(order = state.order) {
+    if (isTrial(order)) return { mode: 'free_trial', wei: '0', bnb: '0' };
+    const wei = String(order?.priceWei || order?.payment?.valueWei || config.priceWei);
+    return { mode: 'paid', wei, bnb: wei === '1400000000000000' ? '0.0014' : config.priceBnb };
+  }
+  function trialKnown() { return state.trialAddress.toLowerCase() === state.account.toLowerCase() && ['eligible', 'used'].includes(state.trialEligibility); }
+  function displayedQuote() {
+    if (state.order && state.order.status !== 'completed') return orderQuote();
+    if (trialKnown()) return state.trialEligibility === 'eligible' ? { mode: 'free_trial', wei: '0', bnb: '0' } : { mode: 'paid', wei: config.priceWei, bnb: config.priceBnb };
+    return { mode: 'unknown', wei: null, bnb: null };
+  }
+  function orderLabel(status) {
+    if (!isTrial()) return labels[status] || '正在查询这笔订单。';
+    return ({
+      awaiting_authorization: '首次免费订单已准备好，等待钱包签名。',
+      queued: '首次免费已确认，AI 合影正在排队。',
+      submitting: '正在提交这次首次免费的 AI 合影。',
+      generating: 'AI 正在制作你的首次免费合影。',
+      completed: '首次免费 AI 合影已完成。可以下载或收藏。',
+      review_required: '首次免费订单需要服务方核查。请保留订单号，不要重复创建任务。',
+      failed: '首次免费 AI 合影暂未完成。请保留订单号，继续查看原任务。',
+    })[status] || '正在查询这次首次免费订单。';
+  }
   function render() {
     const inputBusy = getInput().busy;
     const paid = state.mode === 'paid';
@@ -100,8 +125,8 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     $('modePaid').classList.toggle('selected', paid); $('modePaid').setAttribute('aria-pressed', String(paid));
     $('modeFree').disabled = state.busy || inputBusy; $('modePaid').disabled = state.busy || inputBusy;
     $('paidPanel').hidden = !paid; $('shootButton').hidden = paid;
-    $('serviceNote').innerHTML = paid ? 'AI 合影 · 每笔付款对应一次生成<br>付款确认后使用服务方的 LibTV 额度。' : '本地模板合成 · 保留真实五官<br>头像不上传，不使用生图额度。';
-    $('paidAvailability').textContent = state.checking ? '正在确认 AI 合影是否可以使用…' : state.ready ? 'AI 合影已开放。每次生成前都会验证链上付款。' : base ? 'AI 合影暂不可用，请稍后重试。当前无法付款。' : 'AI 合影尚未开放。你可以继续免费拍摄。';
+    $('serviceNote').innerHTML = paid ? 'AI 合影 · 每个钱包首次免费<br>之后 0.0001 BNB / 次，使用服务方的 LibTV 额度。' : '本地模板合成 · 保留真实五官<br>头像不上传，不使用生图额度。';
+    $('paidAvailability').textContent = state.checking ? '正在确认 AI 合影是否可以使用…' : state.ready ? 'AI 合影已开放。每个钱包首次免费，之后每次 0.0001 BNB。' : base ? 'AI 合影暂不可用，请稍后重试。当前无法生成或付款。' : 'AI 合影尚未开放。你可以继续免费拍摄。';
     $('paidAvailability').classList.toggle('ready', state.ready);
     $('paidHealthRetry').hidden = !base || state.ready; $('paidHealthRetry').disabled = state.checking || state.busy;
     $('paidConsent').disabled = !state.ready || state.busy;
@@ -110,32 +135,42 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     $('paidWallet').hidden = !state.account;
     $('paidWallet').textContent = state.account ? `当前钱包：${state.account.slice(0, 6)}…${state.account.slice(-4)}` : '';
     const existing = state.order && state.order.status !== 'completed';
-    $('paidGenerate').disabled = !state.ready || state.busy || getInput().photoLoading || !state.account || !$('paidConsent').checked || (!existing && !getInput().photo);
-    $('paidGenerate').querySelector('span').textContent = existing ? '继续这笔订单' : '支付 0.0014 BNB 并生成';
+    const quote = displayedQuote();
+    const noTransfer = quote.mode === 'free_trial';
+    $('paidPrice').textContent = noTransfer ? '首次免费 · 0 BNB' : quote.mode === 'paid' ? `${quote.bnb} BNB` : '首次免费资格待核验';
+    $('paidFeeNote').textContent = noTransfer ? '只需签名，不支付 BNB，不产生网络手续费' : quote.mode === 'paid' ? quote.bnb === config.priceBnb ? '钱包另计网络手续费' : '这是旧订单创建时约定的金额；新订单为 0.0001 BNB' : '之后 0.0001 BNB / 次，付费时另计网络手续费';
+    $('paidWalletExplanation').textContent = noTransfer ? '本次首次免费，只需钱包签名确认订单。不会请求转账。' : quote.mode === 'paid' ? `钱包先请求签名确认订单（不扣费），再请求支付 ${quote.bnb} BNB。请核对网络、金额和收款地址。` : '连接钱包后核验首次免费资格。首次免费只需签名，之后的合影需要支付 0.0001 BNB。';
+    $('paidTrialStatus').textContent = state.trialEligibility === 'checking' ? '正在核验此钱包的首次免费资格…' : !state.account ? '连接钱包后，核验首次免费资格。' : trialKnown() ? state.trialEligibility === 'eligible' ? '此钱包可以使用一次免费 AI 合影。' : '此钱包的首次免费名额已使用；之后每次 0.0001 BNB。' : '暂时无法确认首次免费资格，尚未请求生成或付款。';
+    $('paidTrialRetry').hidden = !state.account || !state.ready || trialKnown();
+    $('paidTrialRetry').disabled = state.busy || state.trialEligibility === 'checking';
+    $('paidGenerate').disabled = !state.ready || state.busy || getInput().photoLoading || !state.account || !$('paidConsent').checked || (!existing && (!getInput().photo || !trialKnown()));
+    $('paidGenerate').querySelector('span').textContent = existing ? ['awaiting_authorization', 'awaiting_payment'].includes(state.order.status) && !state.order.txHash && !state.order.paymentRequested ? noTransfer ? '签名并免费生成' : `支付 ${quote.bnb} BNB 并继续` : '继续查看这笔订单' : noTransfer ? '签名并免费生成' : quote.mode === 'paid' ? `支付 ${quote.bnb} BNB 并生成` : '核验资格后生成 AI 合影';
     $('paidOrderInfo').hidden = !state.order;
     $('paidOrderStatus').textContent = state.message || labels[state.order?.status] || '';
     $('paidOrderId').textContent = state.order ? `订单号：${state.order.id}` : '';
-    $('paidTransaction').hidden = !state.order?.txHash;
+    $('paidTransaction').hidden = isTrial() || !state.order?.txHash;
     $('paidTransaction').textContent = state.order?.txHash ? `交易凭证：${state.order.txHash}` : '';
     $('paidResume').hidden = !state.order || state.busy;
-    $('paidResume').disabled = !state.ready && !state.order?.txHash && state.order?.status !== 'completed';
+    // An existing order can be read even when new generation capacity is unavailable.
+    $('paidResume').disabled = !base;
     $('paidResume').textContent = state.order?.status === 'completed' ? '重新打开已生成合影' : '继续这笔订单';
     $('paidPause').hidden = !state.busy || !['confirming', 'generating', 'polling'].includes(state.stage);
-    $('paidTxRecovery').hidden = !state.order?.paymentRequested || state.busy || !['awaiting_authorization', 'awaiting_payment'].includes(state.order?.status) || (!!state.order?.txHash && !state.error);
-    $('paidSubmitTx').disabled = state.busy;
+    $('paidTxRecovery').hidden = isTrial() || !state.order?.paymentRequested || state.busy || !['awaiting_authorization', 'awaiting_payment'].includes(state.order?.status) || (!!state.order?.txHash && !state.error);
+    $('paidSubmitTx').disabled = state.busy || isTrial();
+    document.querySelector('.receipt-note').textContent = isTrial() ? '订单凭证保存在此浏览器，清理站点数据可能丢失，请保存订单号。照片完成后记得下载。' : '订单凭证保存在此浏览器，清理站点数据可能丢失，请保存订单号和交易哈希。照片完成后记得下载。';
     const visibleError = [state.storageWarning, state.error].filter(Boolean).join(' ');
     $('paidError').hidden = !visibleError; $('paidError').textContent = visibleError;
   }
   function setBusy(busy) { state.busy = busy; onBusy(busy); render(); }
   function setStage(stage, message) {
     state.stage = stage; state.message = message; render();
-    if (state.busy) onStatus(message, stage === 'confirming' ? '付款需要链上确认，确认前不会扣用 AI 生图额度。' : '每笔订单只对应本次 AI 合影，请不要重复付款。');
+    if (state.busy) onStatus(message, displayedQuote().mode === 'free_trial' ? '本次首次免费，只生成这笔订单的合影，不会请求转账。' : stage === 'confirming' ? '付款需要链上确认，确认前不会扣用 AI 生图额度。' : '每笔订单只对应本次 AI 合影，请不要重复创建订单。');
   }
   function errorMessage(error) {
     if (Number(error?.code) === 4001 || Number(error?.code) === -32002) return '钱包操作已取消，或有请求等待确认。订单会保留，可稍后继续。';
     if (error?.name === 'AbortError') return '连接暂时超时。订单会保留，可稍后继续查看。';
     if (Number(error?.code) === 4902) return '钱包尚未添加 BNB Smart Chain 主网，请在钱包中添加此网络后重试。';
-    return error?.userMessage || '暂时无法继续。订单会保留，请稍后重试；已付款请不要再次付款。';
+    return error?.userMessage || (isTrial() ? '暂时无法继续。首次免费订单会保留，请稍后查看原订单。' : '暂时无法继续。订单会保留，请稍后重试；已付款请不要再次付款。');
   }
   function userError(message) { const error = new Error(message); error.userMessage = message; return error; }
   async function request(path, { method = 'GET', data, token, blob = false } = {}) {
@@ -156,7 +191,7 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     } finally { clearTimeout(timeout); }
   }
   function matchesService(info) {
-    return info?.ready === true && Number(info.chainId) === config.chainId && String(info.recipient).toLowerCase() === config.recipient.toLowerCase() && String(info.priceWei) === config.priceWei && String(info.priceBnb) === config.priceBnb && info.provider === 'libtv';
+    return info?.ready === true && Number(info.chainId) === config.chainId && String(info.recipient).toLowerCase() === config.recipient.toLowerCase() && String(info.priceWei) === config.priceWei && String(info.priceBnb) === config.priceBnb && info.provider === 'libtv' && info.firstFree === config.firstFree && info.trialPolicy === config.trialPolicy;
   }
   async function checkHealth() {
     if (!base || state.checking) { render(); return false; }
@@ -165,6 +200,21 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     catch { state.ready = false; }
     finally { state.checking = false; render(); }
     return state.ready;
+  }
+  async function checkEligibility() {
+    if (!base || !state.ready || !/^0x[0-9a-f]{40}$/i.test(state.account)) return null;
+    const address = state.account;
+    state.trialEligibility = 'checking'; state.trialAddress = ''; render();
+    try {
+      const info = await request(`/api/trial?address=${encodeURIComponent(address)}`);
+      if (info?.policy !== config.trialPolicy || typeof info.eligible !== 'boolean') throw userError('首次免费资格暂时无法核验，请稍后重试。');
+      if (state.account.toLowerCase() !== address.toLowerCase()) return null;
+      state.trialAddress = address; state.trialEligibility = info.eligible ? 'eligible' : 'used';
+      return info.eligible;
+    } catch {
+      if (state.account.toLowerCase() === address.toLowerCase()) { state.trialEligibility = 'unknown'; state.trialAddress = address; }
+      return null;
+    } finally { render(); }
   }
   function wallet() {
     if (!window.ethereum?.request) throw userError('请使用支持 BNB Smart Chain 的钱包浏览器，或安装钱包扩展后再继续。');
@@ -187,26 +237,39 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
       const accounts = await provider.request({ method: 'eth_requestAccounts' });
       if (!/^0x[0-9a-f]{40}$/i.test(accounts?.[0])) throw userError('暂未取得钱包地址，请重新连接钱包。');
       await ensureChain(provider); state.account = accounts[0];
-      setStage('ready', '钱包已连接。上传照片并勾选授权后，可以确认付款。');
+      const eligible = await checkEligibility();
+      setStage('ready', eligible === true ? '此钱包首次 AI 合影免费。上传照片并授权后，即可签名生成。' : eligible === false ? '首次免费名额已使用。上传照片并授权后，可确认 0.0001 BNB 的合影。' : '钱包已连接，首次免费资格暂时无法核验。请稍后重试。');
     } catch (error) { state.error = errorMessage(error); }
     finally { setBusy(false); }
   }
+  function validateBilling(order) {
+    if (!['free_trial', 'paid'].includes(order?.billingMode) || !/^\d+$/.test(String(order.priceWei)) || !/^\d+(?:\.\d+)?$/.test(String(order.priceBnb))) throw userError('订单费用暂时无法核验，尚未请求签名或转账。');
+    if (order.billingMode === 'free_trial') {
+      if (BigInt(order.priceWei) !== 0n || Number(order.priceBnb) !== 0 || order.payment || order.txHash || order.status === 'awaiting_payment') throw userError('首次免费订单信息不一致，已停止操作，不会转账。');
+    } else {
+      const expectedBnb = String(order.priceWei) === config.priceWei ? config.priceBnb : String(order.priceWei) === '1400000000000000' ? '0.0014' : null;
+      if (!expectedBnb || String(order.priceBnb) !== expectedBnb) throw userError('订单金额不在可核验范围内，已停止付款。');
+    }
+  }
   function adoptOrder(order) {
     if (!order || order.id !== state.order?.id || typeof order.status !== 'string') throw userError('订单信息暂时无法核验，请稍后继续。');
+    validateBilling(order);
     // Retain only the private order receipt in this browser; never put it in a URL.
-    state.order = { ...state.order, status: order.status, character: order.character || state.order.character, scene: order.scene || state.order.scene, options: order.options || state.order.options, payerAddress: order.payerAddress || state.order.payerAddress, expiresAt: order.expiresAt, txHash: order.txHash || state.order.txHash, signatureMessage: order.signatureMessage || state.order.signatureMessage, payment: order.payment || state.order.payment, recoverable: order.recoverable, paymentStatus: order.paymentStatus };
-    state.message = labels[order.status] || '正在查询这笔订单。';
-    if (!storeReceipt() && state.order.txHash) warnReceiptLoss();
+    const trial = order.billingMode === 'free_trial';
+    state.order = { ...state.order, status: order.status, character: order.character || state.order.character, scene: order.scene || state.order.scene, options: order.options || state.order.options, payerAddress: order.payerAddress || state.order.payerAddress, expiresAt: order.expiresAt, billingMode: order.billingMode, priceWei: String(order.priceWei), priceBnb: String(order.priceBnb), txHash: trial ? undefined : order.txHash || state.order.txHash, signatureMessage: order.signatureMessage || state.order.signatureMessage, payment: trial ? undefined : order.payment || state.order.payment, paymentRequested: trial ? false : state.order.paymentRequested, recoverable: order.recoverable, paymentStatus: order.paymentStatus };
+    state.message = orderLabel(order.status);
+    if (trial && order.status !== 'awaiting_authorization' && state.account.toLowerCase() === state.order.payerAddress?.toLowerCase()) { state.trialEligibility = 'used'; state.trialAddress = state.account; }
+    if (!storeReceipt() && (state.order.txHash || (trial && order.status !== 'awaiting_authorization'))) warnReceiptLoss();
     render();
   }
   function validatePayment(payment) {
-    if (!payment || Number(payment.chainId) !== config.chainId || String(payment.to).toLowerCase() !== config.recipient.toLowerCase() || String(payment.valueWei) !== config.priceWei || !/^0x[0-9a-f]+$/i.test(payment.valueHex) || BigInt(payment.valueHex) !== BigInt(config.priceWei) || !/^0x(?:[0-9a-f]{2})+$/i.test(payment.data)) throw userError('付款信息与页面显示不一致，已停止付款。请稍后继续。');
+    if (isTrial() || !payment || Number(payment.chainId) !== config.chainId || String(payment.to).toLowerCase() !== config.recipient.toLowerCase() || String(payment.valueWei) !== state.order.priceWei || !/^0x[0-9a-f]+$/i.test(payment.valueHex) || BigInt(payment.valueHex) !== BigInt(state.order.priceWei) || !/^0x(?:[0-9a-f]{2})+$/i.test(payment.data)) throw userError('付款信息与已确认的订单费用不一致，已停止付款。请稍后继续。');
   }
   function requirePaymentWindow() {
     // Once a wallet request or transaction exists, retain the receipt and query the chain.
     if (state.order?.paymentRequested || state.order?.txHash) return;
     if (typeof state.order?.expiresAt !== 'number' || !Number.isFinite(state.order.expiresAt) || state.order.expiresAt - Date.now() < 30000) {
-      const error = userError('这笔未付款订单已过期或即将过期，当前不可付款。请重新创建一笔订单。');
+      const error = userError(isTrial() ? '这笔未签名的首次免费订单已过期或即将过期，请重新创建一笔订单。' : '这笔未付款订单已过期或即将过期，当前不可付款。请重新创建一笔订单。');
       error.apiCode = 'ORDER_EXPIRED';
       throw error;
     }
@@ -227,12 +290,12 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     const stamped = await stampPhotoBlob(image, resultMeta.character, 'ai');
     if (run !== operation) return;
     onResult({ blob: stamped, ...resultMeta, photoMethod: 'ai', signatureVersion: SIGNATURE_VERSION });
-    setStage('completed', labels.completed);
+    setStage('completed', orderLabel('completed'));
   }
   async function monitor(run) {
     while (run === operation) {
       let order;
-      if (state.order.txHash && ['awaiting_authorization', 'awaiting_payment'].includes(state.order.status)) {
+      if (!isTrial() && state.order.txHash && ['awaiting_authorization', 'awaiting_payment'].includes(state.order.status)) {
         setStage('confirming', labels.awaiting_payment);
         order = await request(`/api/orders/${encodeURIComponent(state.order.id)}/payment`, { method: 'POST', token: state.order.token, data: { txHash: state.order.txHash } });
       } else {
@@ -242,31 +305,33 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
       if (run !== operation) return;
       adoptOrder(order);
       if (order.status === 'completed') { await showResult(order, run); return; }
-      if (order.status === 'review_required') { setStage('review_required', labels.review_required); return; }
-      if (order.status === 'failed') { setStage('failed', labels.failed); return; }
+      if (order.status === 'review_required') { setStage('review_required', orderLabel('review_required')); return; }
+      if (order.status === 'failed') { setStage('failed', orderLabel('failed')); return; }
       if (order.status === 'awaiting_authorization' || (order.status === 'awaiting_payment' && !state.order.txHash)) return;
       setStage(order.status === 'awaiting_payment' ? 'confirming' : 'generating', state.message);
       await delay(3500);
     }
   }
-  async function continueOrder(run) {
+  async function continueOrder(run, displayedPriceWei) {
     const orderPath = `/api/orders/${encodeURIComponent(state.order.id)}`;
     const existing = await request(orderPath, { token: state.order.token });
     if (run !== operation) return;
     adoptOrder(existing);
     if (existing.status === 'completed') { await showResult(existing, run); return; }
     if (existing.status === 'review_required') {
-      if (!existing.recoverable) { setStage('review_required', labels.review_required); return; }
+      if (!existing.recoverable) { setStage('review_required', orderLabel('review_required')); return; }
       setStage('polling', '正在恢复原来的 AI 任务，既不再次付款，也不创建新的生成。');
       adoptOrder(await request(`${orderPath}/retry`, { method: 'POST', token: state.order.token, data: {} }));
     }
     if (existing.status === 'failed') {
-      if (!existing.recoverable) { setStage('failed', labels.failed); return; }
+      if (!existing.recoverable) { setStage('failed', orderLabel('failed')); return; }
       adoptOrder(await request(`${orderPath}/retry`, { method: 'POST', token: state.order.token, data: {} }));
     }
     if (['awaiting_authorization', 'awaiting_payment'].includes(state.order.status) && !state.order.txHash) {
       requirePaymentWindow();
+      if (!isTrial() && String(displayedPriceWei) !== state.order.priceWei) throw userError(`这笔订单的约定费用是 ${state.order.priceBnb} BNB，已更新页面报价。请核对金额后再次点击，不会自动转账。`);
       if (!$('paidConsent').checked) throw userError('请先勾选本次照片发送授权，再继续这笔订单。');
+      if (!await checkHealth()) throw userError(isTrial() ? 'AI 合影暂不可用，尚未签名使用首次免费名额。订单会保留。' : 'AI 合影暂不可用，已停止付款。订单会保留。');
       const provider = wallet();
       if (!state.account) {
         const accounts = await provider.request({ method: 'eth_requestAccounts' });
@@ -278,17 +343,27 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
         if (!storeReceipt()) throw storageError();
         requirePaymentWindow();
         if (typeof state.order.signatureMessage !== 'string' || state.order.signatureMessage.length > 4096) throw userError('订单签名信息暂时无法核验，请稍后继续。');
-        setStage('signing', '请在钱包签名确认这笔订单，签名不扣费。');
+        setStage('signing', isTrial() ? '请在钱包签名确认首次免费订单，不会请求转账。' : '请在钱包签名确认这笔订单，签名不扣费。');
         const messageHex = '0x' + [...new TextEncoder().encode(state.order.signatureMessage)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+        const signedBillingMode = state.order.billingMode, signedPriceWei = state.order.priceWei;
         const signature = await provider.request({ method: 'personal_sign', params: [messageHex, state.account] });
         if (run !== operation) return;
-        adoptOrder(await request(`${orderPath}/authorize`, { method: 'POST', token: state.order.token, data: { signature } }));
+        const authorized = await request(`${orderPath}/authorize`, { method: 'POST', token: state.order.token, data: { signature } });
+        if (authorized.billingMode !== signedBillingMode || String(authorized.priceWei) !== signedPriceWei) throw userError('签名后的订单费用发生变化，已停止操作，不会请求转账。请稍后核对原订单。');
+        adoptOrder(authorized);
       }
+      if (isTrial()) {
+        if (state.order.status === 'awaiting_authorization') throw userError('首次免费订单尚未确认，请稍后继续，不会转账。');
+        await monitor(run);
+        return;
+      }
+      // Another tab may already have confirmed this exact order while the wallet was open.
+      if (!['awaiting_authorization', 'awaiting_payment'].includes(state.order.status)) { await monitor(run); return; }
       if (!await checkHealth()) throw userError('AI 合影暂不可用，已停止付款。订单会保留。');
       validatePayment(state.order.payment);
       await currentAccount(provider);
       requirePaymentWindow();
-      setStage('paying', '请在钱包确认支付 0.0014 BNB，并核对收款地址。');
+      setStage('paying', `请在钱包确认支付 ${state.order.priceBnb} BNB，并核对收款地址。`);
       const payment = state.order.payment;
       // A refresh while the wallet is open must never start a second transfer.
       state.order.paymentRequested = true;
@@ -309,30 +384,37 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
   async function generate({ resumeOnly = false } = {}) {
     if (state.busy) return;
     if (!base) { state.error = 'AI 合影尚未开放，当前无法付款。'; render(); return; }
+    const clickedQuote = displayedQuote();
     state.error = ''; const run = ++operation; setBusy(true);
     try {
-      const needsPayment = !state.order || (!state.order.txHash && ['awaiting_authorization', 'awaiting_payment'].includes(state.order.status)) || (state.order.status === 'completed' && !resumeOnly);
-      const ready = await checkHealth();
-      if (needsPayment && !ready) throw userError('AI 合影暂不可用，当前无法付款。');
       const input = getInput();
       const useExisting = state.order && (resumeOnly || state.order.status !== 'completed');
       if (!useExisting) {
+        if (!await checkHealth()) throw userError('AI 合影暂不可用，尚未请求生成或付款。');
         if (!input.photo || !state.account || !$('paidConsent').checked) throw userError('请先上传照片、连接钱包并勾选本次发送授权。');
         await currentAccount(wallet());
-        setStage('creating', '正在准备合影订单。此时尚未付款。');
+        if (!['free_trial', 'paid'].includes(clickedQuote.mode)) throw userError('请先核验首次免费资格，再确认本次费用。');
+        const eligible = await checkEligibility();
+        if (eligible === null) throw userError('首次免费资格暂时无法核验，尚未请求签名或转账。请稍后重试。');
+        const expectedBillingMode = eligible ? 'free_trial' : 'paid';
+        if (expectedBillingMode !== clickedQuote.mode) throw userError('首次免费资格已更新。请核对页面显示的本次费用后，再点击生成；当前不会转账。');
+        setStage('creating', expectedBillingMode === 'free_trial' ? '正在准备首次免费 AI 合影订单。' : '正在准备 0.0001 BNB 的合影订单。此时尚未付款。');
         const options = { gender: input.gender, body: input.body, outfit: input.outfit };
-        const order = await request('/api/orders', { method: 'POST', data: { payerAddress: state.account, photoDataUrl: input.photo.dataURL, character: input.character, scene: input.scene, options } });
+        const order = await request('/api/orders', { method: 'POST', data: { payerAddress: state.account, photoDataUrl: input.photo.dataURL, character: input.character, scene: input.scene, options, expectedBillingMode } });
         if (!/^[A-Za-z0-9_-]{8,128}$/.test(order?.id) || typeof order.token !== 'string' || order.token.length < 16 || order.token.length > 512 || order.status !== 'awaiting_authorization') throw userError('订单暂时无法核验，尚未请求付款。');
-        state.order = { id: order.id, token: order.token, status: order.status, signatureMessage: order.signatureMessage, payerAddress: state.account, character: input.character, scene: input.scene, options, createdAt: Date.now(), expiresAt: order.expiresAt };
+        validateBilling(order);
+        state.order = { id: order.id, token: order.token, status: order.status, signatureMessage: order.signatureMessage, payerAddress: state.account, character: input.character, scene: input.scene, options, createdAt: Date.now(), expiresAt: order.expiresAt, billingMode: order.billingMode, priceBnb: String(order.priceBnb), priceWei: String(order.priceWei) };
         if (!storeReceipt()) throw storageError();
         render();
+        if (order.billingMode !== expectedBillingMode || (order.billingMode === 'paid' && state.order.priceWei !== config.priceWei)) throw userError('订单费用与刚确认的首次免费资格或金额不同。已停止操作，请核对页面报价后重试；当前不会签名或转账。');
       }
       if (!state.order) throw userError('未找到可继续的订单。');
-      await continueOrder(run);
+      await continueOrder(run, clickedQuote.wei);
     } catch (error) {
       if (run === operation) {
         state.error = errorMessage(error);
         if (error.apiCode === 'ORDER_EXPIRED' && state.order && !state.order.paymentRequested && !state.order.txHash) { clearReceipt(state.order.id); state.order = null; }
+        if (error.apiCode === 'TRIAL_CHANGED') { await checkEligibility(); state.error = '首次免费资格已变化，请核对当前费用后重新点击。当前不会转账。'; }
       }
     }
     finally { if (run === operation) { setBusy(false); render(); } }
@@ -340,16 +422,18 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
   function selectMode(mode) {
     if (state.busy || getInput().busy || state.mode === mode) return;
     state.mode = mode; onModeChange(mode); render();
-    if (mode === 'paid' && base) checkHealth();
+    if (mode === 'paid' && base) checkHealth().then(ready => { if (ready && state.account) checkEligibility(); });
   }
   $('modeFree').addEventListener('click', () => selectMode('free'));
   $('modePaid').addEventListener('click', () => selectMode('paid'));
-  $('paidHealthRetry').addEventListener('click', checkHealth);
+  $('paidHealthRetry').addEventListener('click', async () => { if (await checkHealth() && state.account) await checkEligibility(); });
+  $('paidTrialRetry').addEventListener('click', checkEligibility);
   $('paidConsent').addEventListener('change', render);
   $('paidConnect').addEventListener('click', connect);
   $('paidGenerate').addEventListener('click', () => generate());
   $('paidResume').addEventListener('click', () => generate({ resumeOnly: true }));
   $('paidSubmitTx').addEventListener('click', () => {
+    if (isTrial()) { state.error = '首次免费订单不需要付款，不接受交易哈希。'; render(); return; }
     const txHash = $('paidTxHash').value.trim();
     if (!state.order || state.busy || !/^0x[0-9a-f]{64}$/i.test(txHash)) { state.error = '请填写钱包中该笔付款的完整交易哈希（0x 开头的 66 个字符）。'; render(); return; }
     state.order.txHash = txHash;
@@ -365,6 +449,6 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
   return {
     refresh: render,
     get mode() { return state.mode; },
-    snapshot: () => ({ mode: state.mode, available: state.ready, configured: !!base, busy: state.busy, stage: state.stage, walletConnected: !!state.account, orderStatus: state.order?.status || null, hasOrder: !!state.order, hasTransaction: !!state.order?.txHash, message: state.message, error: state.error, storageWarning: state.storageWarning }),
+    snapshot: () => ({ mode: state.mode, available: state.ready, configured: !!base, busy: state.busy, stage: state.stage, walletConnected: !!state.account, trialEligibility: state.trialEligibility, billingMode: state.order?.billingMode || null, orderPriceBnb: state.order?.priceBnb || null, orderStatus: state.order?.status || null, hasOrder: !!state.order, hasTransaction: !!state.order?.txHash, message: state.message, error: state.error, storageWarning: state.storageWarning }),
   };
 }
