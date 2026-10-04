@@ -8,7 +8,7 @@
   <meta name="description" content="上传头像，选择 CZ 或何一、身体版型和服装，在浏览器里制作你的纪念合影。">
   <title>币安照相馆 · CZ & 何一</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?ver=github-primary-20261004">
+  <link rel="stylesheet" href="styles.css?ver=recipient-20261004">
 </head>
 <body>
   <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -63,7 +63,7 @@
         <div id="paidPanel" class="paid-panel" hidden>
           <div class="paid-title"><svg><use href="#spark"/></svg><h3>让 AI 留下这次合影</h3></div>
           <p class="paid-description">每个钱包首次 AI 合影免费，之后每次 0.001 BNB。用你的照片与所选伙伴生成一张新的合影。服装和身材选项供 AI 参考，实际结果可能保留原照片的穿着。</p>
-          <dl class="payment-details"><div><dt>本次费用</dt><dd><strong id="paidPrice">首次免费</strong><span id="paidFeeNote">之后 0.001 BNB / 次，付费时钱包另计网络手续费</span></dd></div><div><dt>钱包网络</dt><dd>BNB Smart Chain 主网</dd></div><div class="recipient-row"><dt>收款地址</dt><dd><code id="paidRecipient">0x7C4383da12264BeD66D125EF34d4a4A8Bb8979F2</code></dd></div></dl>
+          <dl class="payment-details"><div><dt>本次费用</dt><dd><strong id="paidPrice">首次免费</strong><span id="paidFeeNote">之后 0.001 BNB / 次，付费时钱包另计网络手续费</span></dd></div><div><dt>钱包网络</dt><dd>BNB Smart Chain 主网</dd></div><div class="recipient-row"><dt>收款地址</dt><dd><code id="paidRecipient">0xdC0A1628203953EB54Cb8649B0b0C228b1364f95</code></dd></div></dl>
           <p id="paidAvailability" class="paid-availability" role="status" aria-live="polite">AI 合影尚未开放。你可以继续免费拍摄。</p>
           <button id="paidHealthRetry" class="text-button" hidden>重新检查服务</button>
           <p id="paidTrialStatus" class="paid-wallet" role="status" aria-live="polite">连接钱包后，核验首次免费资格。</p>
@@ -109,6 +109,6 @@
     <label for="cropX">左右位置<input id="cropX" type="range" min="5" max="95" value="50"></label><label for="cropY">上下位置<input id="cropY" type="range" min="5" max="95" value="40"></label><label for="cropSize">脸部大小<input id="cropSize" type="range" min="8" max="80" value="30"></label>
   </div><button id="cropConfirm" class="download-button">使用圈选头像</button></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="app.js?ver=github-primary-20261004"></script>
+  <script type="module" src="app.js?ver=recipient-20261004"></script>
 </body>
 </html>

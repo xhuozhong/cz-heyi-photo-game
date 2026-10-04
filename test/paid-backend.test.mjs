@@ -5,15 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { Wallet } from 'ethers';
+import { Wallet, getAddress } from 'ethers';
 import sharp from 'sharp';
 import { createPaidServer, loadConfig } from '../backend/server.mjs';
 import { OrderStore } from '../backend/store.mjs';
-import { PRICE_WEI, PRICE_BNB } from '../backend/payment.mjs';
+import { PRICE_WEI, PRICE_BNB, RECIPIENT } from '../backend/payment.mjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const photoDataUrl = `data:image/jpeg;base64,${(await sharp({ create: { width: 512, height: 512, channels: 3, background: '#caa' } }).jpeg().toBuffer()).toString('base64')}`;
 const hash = () => `0x${randomBytes(32).toString('hex')}`;
+const expectedRecipient = '0xdC0A1628203953EB54Cb8649B0b0C228b1364f95';
+const legacyRecipient = getAddress('0x7c4383da12264bed66d125ef34d4a4a8bb8979f2');
 
 class FakeChain {
   constructor() { this.chainId = 56n; this.latest = 100; this.finalized = 100; this.transactions = new Map(); this.blocks = new Map(); this.now = Math.floor(Date.now() / 1000); }
@@ -76,6 +78,75 @@ test('wallet signature binds exact order and a second wallet cannot authorize', 
   assert.equal(authorized.payment.chainId, 56);
   const other = await f.create(Wallet.createRandom());
   await assert.rejects(f.app.service.authorize(other.id, other.token, await f.wallet.signMessage(other.signatureMessage)), { code: 'WRONG_SIGNER' });
+});
+
+test('new paid checkout advertises and signs the new recipient consistently', async t => {
+  const f = await fixture(t);
+  assert.equal(RECIPIENT, expectedRecipient);
+  await new Promise(resolve => f.app.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${f.app.server.address().port}`;
+  const headers = { 'Content-Type': 'application/json', Origin: f.config.allowedOrigins[0] };
+  const health = await (await fetch(`${base}/api/health`)).json();
+  assert.equal(health.recipient, expectedRecipient);
+  const response = await fetch(`${base}/api/orders`, { method: 'POST', headers, body: JSON.stringify({ payerAddress: f.wallet.address, photoDataUrl, character: 'cz', scene: 'terrace', expectedBillingMode: 'paid' }) });
+  assert.equal(response.status, 201);
+  const order = await response.json();
+  assert.equal(order.signatureMessage.split('\n').find(line => line.startsWith('Recipient: ')), `Recipient: ${expectedRecipient}`);
+  const authorized = await f.authorize(order);
+  assert.equal(authorized.payment.to, expectedRecipient);
+  assert.equal(authorized.payment.chainId, 56);
+  assert.equal(authorized.payment.valueWei, PRICE_WEI);
+  assert.equal(f.provider.submissions, 0);
+  assert.equal(f.chain.transactions.size, 0);
+});
+
+test('a new paid order rejects a transfer to the former recipient without granting credit', async t => {
+  const f = await fixture(t); const order = await f.create(); await f.authorize(order);
+  const id = f.chain.pay(f.app.service.store.state.orders[order.id], { tx: { to: legacyRecipient } });
+  await assert.rejects(f.app.service.claim(order.id, order.token, id), { code: 'WRONG_RECIPIENT' });
+  await f.app.service.processQueue();
+  assert.equal((await f.app.service.get(order.id, order.token)).status, 'awaiting_payment');
+  assert.equal(f.app.service.store.state.consumedTransactions[id], undefined);
+  assert.equal(f.provider.submissions, 0);
+});
+
+for (const alreadyAuthorized of [false, true]) test(`restored legacy-recipient ${alreadyAuthorized ? 'authorized payment' : 'signed quote'} retains its address and rejects the new recipient`, async t => {
+  const f = await fixture(t); const order = await f.create();
+  let legacyMessage;
+  await f.app.service.store.exclusive(async () => {
+    const saved = f.app.service.store.state.orders[order.id];
+    saved.payment.to = legacyRecipient;
+    saved.signatureMessage = saved.signatureMessage.replace(`Recipient: ${RECIPIENT}`, `Recipient: ${legacyRecipient}`);
+    legacyMessage = saved.signatureMessage;
+    await f.app.service.store.save();
+  });
+  const legacySignature = await f.wallet.signMessage(legacyMessage);
+  if (alreadyAuthorized) await f.app.service.authorize(order.id, order.token, legacySignature);
+  const originalPayment = structuredClone(f.app.service.store.state.orders[order.id].payment);
+  await f.app.close();
+  const reopened = await createPaidServer({ config: f.config, chain: f.chain, provider: f.provider, autoProcess: false });
+  try {
+    assert.equal((await reopened.service.ready()).recipient, expectedRecipient);
+    const stored = reopened.service.store.state.orders[order.id];
+    assert.equal(stored.signatureMessage, legacyMessage);
+    assert.deepEqual(stored.payment, originalPayment);
+    const authorized = await reopened.service.authorize(order.id, order.token, legacySignature);
+    assert.equal(authorized.payment.to, legacyRecipient);
+    const wrongId = f.chain.pay(stored, { tx: { to: expectedRecipient } });
+    await assert.rejects(reopened.service.claim(order.id, order.token, wrongId), { code: 'WRONG_RECIPIENT' });
+    assert.equal(reopened.service.store.state.consumedTransactions[wrongId], undefined);
+    assert.equal(f.provider.submissions, 0);
+    const correctId = f.chain.pay(stored);
+    await reopened.service.claim(order.id, order.token, correctId); await reopened.service.processQueue();
+    assert.equal((await reopened.service.get(order.id, order.token)).status, 'completed');
+    assert.equal(reopened.service.store.state.consumedTransactions[correctId], order.id);
+    assert.equal(stored.signatureMessage, legacyMessage);
+    assert.equal(stored.payment.to, legacyRecipient);
+    assert.equal(f.provider.submissions, 1);
+    const next = await reopened.service.create({ payerAddress: f.wallet.address, photoDataUrl, character: 'cz', scene: 'terrace', expectedBillingMode: 'paid' });
+    assert.equal(next.signatureMessage.split('\n').find(line => line.startsWith('Recipient: ')), `Recipient: ${expectedRecipient}`);
+    assert.equal((await reopened.service.authorize(next.id, next.token, await f.wallet.signMessage(next.signatureMessage))).payment.to, expectedRecipient);
+  } finally { await reopened.close(); }
 });
 
 test('only one signed reservation opens payment while unsigned orders do not reserve quota', async t => {

@@ -1,9 +1,10 @@
-import { paidConfig as config } from './paid-config.js?ver=github-primary-20261004';
+import { paidConfig as config } from './paid-config.js?ver=recipient-20261004';
 import { stampPhotoBlob, SIGNATURE_VERSION } from './signature-stamp.js';
 
 const $ = id => document.getElementById(id);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const RECEIPT_KEY = 'encounter-ai-order-v1';
+const LEGACY_RECIPIENT = '0x7C4383da12264BeD66D125EF34d4a4A8Bb8979F2';
 const ORDER_PRICES = Object.freeze({
   [config.priceWei]: config.priceBnb,
   '100000000000000': '0.0001',
@@ -39,11 +40,11 @@ function backendBase() {
 export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onResult }) {
   const base = backendBase();
   const state = { mode: 'free', ready: false, checking: false, healthPending: false, busy: false, stage: 'closed', account: '', order: null, message: '', error: '', storageWarning: '', receiptConflict: null, trialEligibility: 'unknown', trialAddress: '' };
-  let operation = 0;
+  let operation = 0, restoredOrderId = null, legacyRecipientAcknowledged = null;
 
   function receiptMetadata(order) {
     // Whitelist metadata: uploaded photo bytes and result blobs never enter storage.
-    const keys = ['id', 'token', 'status', 'signatureMessage', 'payerAddress', 'character', 'scene', 'createdAt', 'expiresAt', 'txHash', 'paymentRequested', 'recoverable', 'paymentStatus', 'billingMode', 'priceBnb', 'priceWei'];
+    const keys = ['id', 'token', 'status', 'signatureMessage', 'recipient', 'payerAddress', 'character', 'scene', 'createdAt', 'expiresAt', 'txHash', 'paymentRequested', 'recoverable', 'paymentStatus', 'billingMode', 'priceBnb', 'priceWei'];
     const receipt = Object.fromEntries(keys.filter(key => order[key] !== undefined).map(key => [key, order[key]]));
     if (order.options) receipt.options = Object.fromEntries(['gender', 'body', 'outfit'].filter(key => order.options[key] !== undefined).map(key => [key, order.options[key]]));
     if (order.payment) receipt.payment = Object.fromEntries(['chainId', 'to', 'valueWei', 'valueHex', 'data'].filter(key => order.payment[key] !== undefined).map(key => [key, order.payment[key]]));
@@ -95,12 +96,27 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     const saved = JSON.parse(durable || legacy || 'null');
     if (base && saved?.endpoint === base && /^[A-Za-z0-9_-]{8,128}$/.test(saved.id) && typeof saved.token === 'string' && saved.token.length >= 16 && saved.token.length <= 512) {
       state.order = receiptMetadata(saved);
+      restoredOrderId = saved.id;
       state.message = '找到此浏览器中保存的订单，可继续查看。';
       if (legacy) storeReceipt();
     }
   } catch { /* Ignore invalid or unavailable storage. */ }
 
   function isTrial(order = state.order) { return order?.billingMode === 'free_trial'; }
+  function orderRecipient(order = state.order) {
+    if (isTrial(order)) return '';
+    const lines = typeof order?.signatureMessage === 'string' ? order.signatureMessage.split('\n').filter(line => line.startsWith('Recipient:')) : [];
+    const signed = lines.length === 1 && /^Recipient: 0x[0-9a-f]{40}$/i.test(lines[0]) ? lines[0].slice(11) : '';
+    const payment = typeof order?.payment?.to === 'string' && /^0x[0-9a-f]{40}$/i.test(order.payment.to) ? order.payment.to : '';
+    if (signed && payment && signed.toLowerCase() !== payment.toLowerCase()) return '';
+    return payment || signed;
+  }
+  function allowedRecipient(recipient, order = state.order) {
+    return recipient?.toLowerCase() === config.recipient.toLowerCase() || (order?.id === restoredOrderId && recipient?.toLowerCase() === LEGACY_RECIPIENT.toLowerCase());
+  }
+  function displayedRecipient() {
+    return state.order?.billingMode === 'paid' && state.order.status !== 'completed' ? state.order.recipient || orderRecipient() || config.recipient : config.recipient;
+  }
   function orderQuote(order = state.order) {
     if (isTrial(order)) return { mode: 'free_trial', wei: '0', bnb: '0' };
     const wei = String(order?.priceWei || order?.payment?.valueWei || config.priceWei);
@@ -140,6 +156,7 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     $('paidConnect').textContent = state.account ? '更换钱包连接' : '连接钱包';
     $('paidWallet').hidden = !state.account;
     $('paidWallet').textContent = state.account ? `当前钱包：${state.account.slice(0, 6)}…${state.account.slice(-4)}` : '';
+    $('paidRecipient').textContent = displayedRecipient();
     const existing = state.order && state.order.status !== 'completed';
     const quote = displayedQuote();
     const noTransfer = quote.mode === 'free_trial';
@@ -266,16 +283,21 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
   function adoptOrder(order) {
     if (!order || order.id !== state.order?.id || typeof order.status !== 'string') throw userError('订单信息暂时无法核验，请稍后继续。');
     validateBilling(order);
+    const recipient = isTrial(order) ? '' : orderRecipient(order);
+    if (order.billingMode === 'paid' && ['awaiting_authorization', 'awaiting_payment'].includes(order.status) && !state.order.txHash && !state.order.paymentRequested) {
+      const previousRecipient = state.order.recipient || orderRecipient(state.order);
+      if (!allowedRecipient(recipient, order) || (previousRecipient && previousRecipient.toLowerCase() !== recipient.toLowerCase())) throw userError('订单收款地址无法核验或与原约定不同，已停止签名和付款。请核对原订单。');
+    }
     // Retain only the private order receipt in this browser; never put it in a URL.
     const trial = order.billingMode === 'free_trial';
-    state.order = { ...state.order, status: order.status, character: order.character || state.order.character, scene: order.scene || state.order.scene, options: order.options || state.order.options, payerAddress: order.payerAddress || state.order.payerAddress, expiresAt: order.expiresAt, billingMode: order.billingMode, priceWei: String(order.priceWei), priceBnb: String(order.priceBnb), txHash: trial ? undefined : order.txHash || state.order.txHash, signatureMessage: order.signatureMessage || state.order.signatureMessage, payment: trial ? undefined : order.payment || state.order.payment, paymentRequested: trial ? false : state.order.paymentRequested, recoverable: order.recoverable, paymentStatus: order.paymentStatus };
+    state.order = { ...state.order, status: order.status, character: order.character || state.order.character, scene: order.scene || state.order.scene, options: order.options || state.order.options, payerAddress: order.payerAddress || state.order.payerAddress, expiresAt: order.expiresAt, billingMode: order.billingMode, priceWei: String(order.priceWei), priceBnb: String(order.priceBnb), recipient: trial ? undefined : recipient || state.order.recipient, txHash: trial ? undefined : order.txHash || state.order.txHash, signatureMessage: order.signatureMessage || state.order.signatureMessage, payment: trial ? undefined : order.payment || state.order.payment, paymentRequested: trial ? false : state.order.paymentRequested, recoverable: order.recoverable, paymentStatus: order.paymentStatus };
     state.message = orderLabel(order.status);
     if (trial && order.status !== 'awaiting_authorization' && state.account.toLowerCase() === state.order.payerAddress?.toLowerCase()) { state.trialEligibility = 'used'; state.trialAddress = state.account; }
     if (!storeReceipt() && (state.order.txHash || (trial && order.status !== 'awaiting_authorization'))) warnReceiptLoss();
     render();
   }
   function validatePayment(payment) {
-    if (isTrial() || !payment || Number(payment.chainId) !== config.chainId || String(payment.to).toLowerCase() !== config.recipient.toLowerCase() || String(payment.valueWei) !== state.order.priceWei || !/^0x[0-9a-f]+$/i.test(payment.valueHex) || BigInt(payment.valueHex) !== BigInt(state.order.priceWei) || !/^0x(?:[0-9a-f]{2})+$/i.test(payment.data)) throw userError('付款信息与已确认的订单费用不一致，已停止付款。请稍后继续。');
+    if (isTrial() || !payment || Number(payment.chainId) !== config.chainId || !allowedRecipient(payment.to) || String(payment.to).toLowerCase() !== String(state.order.recipient).toLowerCase() || String(payment.valueWei) !== state.order.priceWei || !/^0x[0-9a-f]+$/i.test(payment.valueHex) || BigInt(payment.valueHex) !== BigInt(state.order.priceWei) || !/^0x(?:[0-9a-f]{2})+$/i.test(payment.data)) throw userError('付款信息与已确认的订单费用和收款地址不一致，已停止付款。请稍后继续。');
   }
   function requirePaymentWindow() {
     // Once a wallet request or transaction exists, retain the receipt and query the chain.
@@ -324,7 +346,7 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
       await delay(3500);
     }
   }
-  async function continueOrder(run, displayedPriceWei) {
+  async function continueOrder(run, displayedPriceWei, clickedRecipient) {
     const orderPath = `/api/orders/${encodeURIComponent(state.order.id)}`;
     const existing = await request(orderPath, { token: state.order.token });
     if (run !== operation) return;
@@ -341,7 +363,11 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
     }
     if (['awaiting_authorization', 'awaiting_payment'].includes(state.order.status) && !state.order.txHash) {
       requirePaymentWindow();
-      if (!isTrial() && String(displayedPriceWei) !== state.order.priceWei) throw userError(`这笔订单的约定费用是 ${state.order.priceBnb} BNB，已更新页面报价。请核对金额后再次点击，不会自动转账。`);
+      const legacy = !isTrial() && state.order.recipient?.toLowerCase() === LEGACY_RECIPIENT.toLowerCase();
+      if (!isTrial() && (String(displayedPriceWei) !== state.order.priceWei || clickedRecipient.toLowerCase() !== state.order.recipient.toLowerCase() || (legacy && legacyRecipientAcknowledged !== state.order.id))) {
+        if (legacy) legacyRecipientAcknowledged = state.order.id;
+        throw userError(`这笔${legacy ? '旧' : ''}订单约定支付 ${state.order.priceBnb} BNB，收款地址为 ${state.order.recipient}。已更新页面，请核对金额和地址后再次点击；当前不会签名或转账。`);
+      }
       if (!$('paidConsent').checked) throw userError('请先勾选本次照片发送授权，再继续这笔订单。');
       if (!await checkHealth()) throw userError(isTrial() ? 'AI 合影暂不可用，尚未签名使用首次免费名额。订单会保留。' : 'AI 合影暂不可用，已停止付款。订单会保留。');
       const provider = wallet();
@@ -357,12 +383,12 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
         if (typeof state.order.signatureMessage !== 'string' || state.order.signatureMessage.length > 4096) throw userError('订单签名信息暂时无法核验，请稍后继续。');
         setStage('signing', isTrial() ? '请在钱包签名确认首次免费订单，不会请求转账。' : '请在钱包签名确认这笔订单，签名不扣费。');
         const messageHex = '0x' + [...new TextEncoder().encode(state.order.signatureMessage)].map(byte => byte.toString(16).padStart(2, '0')).join('');
-        const signedBillingMode = state.order.billingMode, signedPriceWei = state.order.priceWei;
+        const signedBillingMode = state.order.billingMode, signedPriceWei = state.order.priceWei, signedRecipient = state.order.recipient;
         const signature = await provider.request({ method: 'personal_sign', params: [messageHex, state.account] });
         if (run !== operation) return;
         setStage('authorizing', isTrial() ? '正在核验首次免费订单，请稍等。不会请求转账。' : '正在核验订单，请稍等。此时尚未请求付款。');
         const authorized = await request(`${orderPath}/authorize`, { method: 'POST', token: state.order.token, data: { signature }, freshPreflight: true });
-        if (authorized.billingMode !== signedBillingMode || String(authorized.priceWei) !== signedPriceWei) throw userError('签名后的订单费用发生变化，已停止操作，不会请求转账。请稍后核对原订单。');
+        if (authorized.billingMode !== signedBillingMode || String(authorized.priceWei) !== signedPriceWei || (signedBillingMode === 'paid' && orderRecipient(authorized).toLowerCase() !== signedRecipient.toLowerCase())) throw userError('签名后的订单费用或收款地址发生变化，已停止操作，不会请求转账。请稍后核对原订单。');
         adoptOrder(authorized);
       }
       if (isTrial()) {
@@ -397,7 +423,7 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
   async function generate({ resumeOnly = false } = {}) {
     if (state.busy) return;
     if (!base) { state.error = 'AI 合影尚未开放，当前无法付款。'; render(); return; }
-    const clickedQuote = displayedQuote();
+    const clickedQuote = displayedQuote(), clickedRecipient = displayedRecipient();
     state.error = ''; const run = ++operation; setBusy(true);
     try {
       const input = getInput();
@@ -416,13 +442,15 @@ export function createPaidMode({ getInput, onModeChange, onBusy, onStatus, onRes
         const order = await request('/api/orders', { method: 'POST', data: { payerAddress: state.account, photoDataUrl: input.photo.dataURL, character: input.character, scene: input.scene, options, expectedBillingMode }, freshPreflight: true });
         if (!/^[A-Za-z0-9_-]{8,128}$/.test(order?.id) || typeof order.token !== 'string' || order.token.length < 16 || order.token.length > 512 || order.status !== 'awaiting_authorization') throw userError('订单暂时无法核验，尚未请求付款。');
         validateBilling(order);
-        state.order = { id: order.id, token: order.token, status: order.status, signatureMessage: order.signatureMessage, payerAddress: state.account, character: input.character, scene: input.scene, options, createdAt: Date.now(), expiresAt: order.expiresAt, billingMode: order.billingMode, priceBnb: String(order.priceBnb), priceWei: String(order.priceWei) };
+        const recipient = isTrial(order) ? undefined : orderRecipient(order);
+        if (order.billingMode === 'paid' && recipient?.toLowerCase() !== config.recipient.toLowerCase()) throw userError('新订单的收款地址与当前公布地址不一致，已停止操作，不会签名或付款。');
+        state.order = { id: order.id, token: order.token, status: order.status, signatureMessage: order.signatureMessage, recipient, payerAddress: state.account, character: input.character, scene: input.scene, options, createdAt: Date.now(), expiresAt: order.expiresAt, billingMode: order.billingMode, priceBnb: String(order.priceBnb), priceWei: String(order.priceWei) };
         if (!storeReceipt()) throw storageError();
         render();
         if (order.billingMode !== expectedBillingMode || (order.billingMode === 'paid' && state.order.priceWei !== config.priceWei)) throw userError('订单费用与刚确认的首次免费资格或金额不同。已停止操作，请核对页面报价后重试；当前不会签名或转账。');
       }
       if (!state.order) throw userError('未找到可继续的订单。');
-      await continueOrder(run, clickedQuote.wei);
+      await continueOrder(run, clickedQuote.wei, clickedRecipient);
     } catch (error) {
       if (run === operation) {
         state.error = errorMessage(error);
