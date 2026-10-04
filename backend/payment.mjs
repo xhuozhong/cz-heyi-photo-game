@@ -2,8 +2,8 @@ import { JsonRpcProvider, getAddress, formatEther } from 'ethers';
 import { ApiError, requireValue } from './errors.mjs';
 
 export const CHAIN_ID = 56;
-export const PRICE_WEI = '100000000000000';
-export const PRICE_BNB = '0.0001';
+export const PRICE_WEI = '1000000000000000';
+export const PRICE_BNB = '0.001';
 export const RECIPIENT = getAddress('0x7c4383da12264bed66d125ef34d4a4a8bb8979f2');
 export const TX_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 

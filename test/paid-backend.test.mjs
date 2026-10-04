@@ -72,7 +72,7 @@ test('wallet signature binds exact order and a second wallet cannot authorize', 
   await assert.rejects(f.authorize(order, Wallet.createRandom()), { code: 'WRONG_SIGNER' });
   await assert.rejects(f.app.service.authorize(order.id, order.token, '0x12'), { code: 'INVALID_SIGNATURE' });
   const authorized = await f.authorize(order);
-  assert.equal(authorized.payment.valueWei, '100000000000000');
+  assert.equal(authorized.payment.valueWei, '1000000000000000');
   assert.equal(authorized.payment.chainId, 56);
   const other = await f.create(Wallet.createRandom());
   await assert.rejects(f.app.service.authorize(other.id, other.token, await f.wallet.signMessage(other.signatureMessage)), { code: 'WRONG_SIGNER' });
@@ -105,8 +105,8 @@ test('unsupported finality or stale RPC closes checkout', async t => {
 const invalid = [
   ['wrong sender', { tx: { from: Wallet.createRandom().address } }, 'WRONG_PAYER'],
   ['wrong recipient', { tx: { to: Wallet.createRandom().address } }, 'WRONG_RECIPIENT'],
-  ['underpayment', { tx: { value: 99999999999999n } }, 'WRONG_AMOUNT'],
-  ['overpayment', { tx: { value: 100000000000001n } }, 'WRONG_AMOUNT'],
+  ['underpayment', { tx: { value: BigInt(PRICE_WEI) - 1n } }, 'WRONG_AMOUNT'],
+  ['overpayment', { tx: { value: BigInt(PRICE_WEI) + 1n } }, 'WRONG_AMOUNT'],
   ['wrong chain', { tx: { chainId: 1n } }, 'WRONG_CHAIN'],
   ['wrong order data', { tx: { data: '0x' } }, 'WRONG_ORDER'],
   ['failed receipt', { receipt: { status: 0 } }, 'TX_FAILED'],
@@ -224,8 +224,8 @@ test('HTTP requires explicit allowed origin and token; backend paths are private
   const cfg = await (await fetch(`${base}/paid-config.js`)).text(); assert.match(cfg, /apiBase: '\/'/);
 });
 
-test('new AI price is exactly 0.0001 BNB and first-free defaults on with an explicit opt-out', () => {
-  assert.equal(PRICE_BNB, '0.0001'); assert.equal(PRICE_WEI, '100000000000000');
+test('new AI price is exactly 0.001 BNB and first-free defaults on with an explicit opt-out', () => {
+  assert.equal(PRICE_BNB, '0.001'); assert.equal(PRICE_WEI, '1000000000000000');
   assert.equal(loadConfig({}).firstFree, true);
   assert.equal(loadConfig({ AI_FIRST_FREE: 'false' }).firstFree, false);
 });
@@ -249,7 +249,7 @@ test('trial preview is case normalized, unsigned uploads do not consume, and onl
   assert.equal(f.provider.submissions, 1); assert.equal((await f.app.service.get(order.id, order.token)).status, 'completed');
   assert.equal(Object.keys(f.app.service.store.state.consumedTransactions).length, 0);
   const second = await f.create(undefined, { payerAddress: f.wallet.address.toLowerCase() });
-  assert.equal(second.billingMode, 'paid'); assert.equal(second.priceBnb, '0.0001'); assert.equal(second.priceWei, '100000000000000');
+  assert.equal(second.billingMode, 'paid'); assert.equal(second.priceBnb, '0.001'); assert.equal(second.priceWei, '1000000000000000');
   const paid = await f.authorize(second); assert.equal(paid.status, 'awaiting_payment'); assert.equal(paid.payment.valueWei, PRICE_WEI);
 });
 
@@ -354,7 +354,8 @@ test('legacy v1 store migration preserves signed order and its exact original pa
   const f = await fixture(t); const order = await f.create();
   const original = f.app.service.store.state.orders[order.id];
   original.payment.valueWei = '1400000000000000'; original.payment.valueHex = '0x4f94e4c440000';
-  original.signatureMessage = original.signatureMessage.replace('0.0001 BNB (100000000000000 wei)', '0.0014 BNB (1400000000000000 wei)');
+  original.signatureMessage = original.signatureMessage.replace(`${PRICE_BNB} BNB (${PRICE_WEI} wei)`, '0.0014 BNB (1400000000000000 wei)');
+  assert.match(original.signatureMessage, /Price: 0\.0014 BNB \(1400000000000000 wei\)/);
   delete original.billingMode; delete original.priceBnb; delete original.priceWei;
   f.app.service.store.state.version = 1; delete f.app.service.store.state.consumedTrials;
   const oldHash = hash(); f.app.service.store.state.consumedTransactions[oldHash] = 'old-existing-order';
@@ -370,6 +371,48 @@ test('legacy v1 store migration preserves signed order and its exact original pa
     assert.equal((await reopened.service.get(order.id, order.token)).status, 'completed');
     assert.equal(reopened.service.store.state.consumedTransactions[oldHash], 'old-existing-order');
     assert.equal(reopened.service.store.state.version, 2); assert.deepEqual(reopened.service.store.state.consumedTrials, {});
+  } finally { await reopened.close(); }
+});
+
+test('restored v2 0.0001 BNB order keeps its exact signature and price while new paid orders cost 0.001', async t => {
+  const f = await fixture(t, { config: { firstFree: true } });
+  const trial = await f.create(); await f.authorize(trial); await f.app.service.processQueue();
+  const order = await f.create(undefined, { expectedBillingMode: 'paid' });
+  const legacyWei = '100000000000000', legacyBnb = '0.0001';
+  let legacySignature;
+  await f.app.service.store.exclusive(async () => {
+    const saved = f.app.service.store.state.orders[order.id];
+    saved.priceWei = saved.payment.valueWei = legacyWei; saved.priceBnb = legacyBnb;
+    saved.payment.valueHex = `0x${BigInt(legacyWei).toString(16)}`;
+    saved.signatureMessage = saved.signatureMessage.replace(`${PRICE_BNB} BNB (${PRICE_WEI} wei)`, `${legacyBnb} BNB (${legacyWei} wei)`);
+    legacySignature = saved.signatureMessage;
+    assert.match(legacySignature, /Price: 0\.0001 BNB \(100000000000000 wei\)/);
+    await f.app.service.store.save();
+  });
+  await f.app.close();
+  const reopened = await createPaidServer({ config: f.config, chain: f.chain, provider: f.provider, autoProcess: false });
+  try {
+    const health = await reopened.service.ready();
+    assert.equal(health.priceBnb, '0.001'); assert.equal(health.priceWei, '1000000000000000');
+    const restored = await reopened.service.get(order.id, order.token);
+    assert.equal(restored.priceBnb, legacyBnb); assert.equal(restored.priceWei, legacyWei); assert.equal(restored.signatureMessage, legacySignature);
+    assert.equal((await reopened.service.trial(f.wallet.address)).eligible, false);
+    assert.equal(reopened.service.store.state.consumedTrials[f.wallet.address.toLowerCase()], trial.id);
+    const authorized = await reopened.service.authorize(order.id, order.token, await f.wallet.signMessage(legacySignature));
+    assert.equal(authorized.payment.valueWei, legacyWei); assert.equal(authorized.payment.valueHex, `0x${BigInt(legacyWei).toString(16)}`);
+    const stored = reopened.service.store.state.orders[order.id];
+    const wrongHash = f.chain.pay(stored, { tx: { value: BigInt(PRICE_WEI) } });
+    await assert.rejects(reopened.service.claim(order.id, order.token, wrongHash), error => error.code === 'WRONG_AMOUNT' && error.message === '付款金额必须为 0.0001 BNB');
+    assert.equal(reopened.service.store.state.consumedTransactions[wrongHash], undefined);
+    const correctHash = f.chain.pay(stored);
+    await reopened.service.claim(order.id, order.token, correctHash); await reopened.service.processQueue();
+    assert.equal((await reopened.service.get(order.id, order.token)).status, 'completed');
+    assert.equal(reopened.service.store.state.orders[order.id].signatureMessage, legacySignature);
+    assert.equal(reopened.service.store.state.consumedTransactions[correctHash], order.id);
+    const next = await reopened.service.create({ payerAddress: f.wallet.address, photoDataUrl, character: 'cz', scene: 'terrace', expectedBillingMode: 'paid' });
+    assert.equal(next.priceBnb, '0.001'); assert.equal(next.priceWei, '1000000000000000'); assert.equal(next.billingMode, 'paid');
+    assert.match(next.signatureMessage, /Price: 0\.001 BNB \(1000000000000000 wei\)/);
+    assert.equal(f.provider.submissions, 2);
   } finally { await reopened.close(); }
 });
 
@@ -390,7 +433,7 @@ test('HTTP trial preview, signed free generation, private result and used-wallet
   const base = `http://127.0.0.1:${f.app.server.address().port}`;
   const headers = { 'Content-Type': 'application/json', Origin: f.config.allowedOrigins[0] };
   const health = await (await fetch(`${base}/api/health`)).json();
-  assert.equal(health.priceBnb, '0.0001'); assert.equal(health.priceWei, PRICE_WEI); assert.equal(health.firstFree, true); assert.equal(health.trialPolicy, 'once_per_wallet');
+  assert.equal(health.priceBnb, '0.001'); assert.equal(health.priceWei, PRICE_WEI); assert.equal(health.firstFree, true); assert.equal(health.trialPolicy, 'once_per_wallet');
   assert.deepEqual(await (await fetch(`${base}/api/trial?address=${f.wallet.address.toLowerCase()}`)).json(), { eligible: true, policy: 'once_per_wallet' });
   assert.equal((await fetch(`${base}/api/trial?address=invalid`)).status, 400);
   const created = await fetch(`${base}/api/orders`, { method: 'POST', headers, body: JSON.stringify({ payerAddress: f.wallet.address, photoDataUrl, character: 'cz', scene: 'terrace', expectedBillingMode: 'free_trial' }) });
